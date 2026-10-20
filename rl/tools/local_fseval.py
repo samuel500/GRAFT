@@ -8,7 +8,7 @@ collate/pareto tooling reads them unchanged:
 
 Usage (on the training box, one GPU):
     python tools/local_fseval.py --sweep_dir output/<sweep> \
-        [--n_eval 256] [--only sorting_v2] [--scales 0.0,0.5,1.0] \
+        [--n_eval 256] [--only sorting_v2 | --only_exact run_a,run_b] [--scales 0.0,0.5,1.0] \
         [--retain_scale 1.0] [--checkpoint_step N] [--gpu_id 0] [--overwrite]
 """
 import argparse
@@ -87,6 +87,8 @@ def main():
     ap.add_argument("--retain_scale", type=float, default=1.0)
     ap.add_argument("--only", default="",
                     help="Substring filter on run dir basenames")
+    ap.add_argument("--only_exact", default="",
+                    help="CSV of exact run dir basenames (--only 'x_s1' also matches x_s15)")
     ap.add_argument("--checkpoint_step", type=int, default=None)
     ap.add_argument("--gpu_id", type=int, default=0)
     ap.add_argument("--gen_batch_size", type=int, default=None,
@@ -105,7 +107,11 @@ def main():
         d for d in glob.glob(os.path.join(sweep_dir, "*"))
         if os.path.isdir(d) and glob.glob(os.path.join(d, "checkpoint-*"))
         and args.only in os.path.basename(d))
-    assert run_dirs, f"no run dirs with checkpoints in {sweep_dir} (only={args.only!r})"
+    if args.only_exact:
+        exact = set(args.only_exact.split(","))
+        run_dirs = [d for d in run_dirs if os.path.basename(d) in exact]
+    assert run_dirs, (f"no run dirs with checkpoints in {sweep_dir} "
+                      f"(only={args.only!r}, only_exact={args.only_exact!r})")
     outdir = f"{sweep_dir}_fseval"
     os.makedirs(outdir, exist_ok=True)
 

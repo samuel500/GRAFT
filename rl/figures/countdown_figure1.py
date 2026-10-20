@@ -49,6 +49,8 @@ ROOT = os.path.dirname(HERE)
 OUT = os.environ.get("GRAFT_OUTPUT_ROOT", os.path.join(ROOT, "paper_data", "output"))
 
 GR_SEEDS = (1, 2, 3, 4, 5, 9, 15, 16)
+if os.environ.get("GRAFT_GR_SEEDS"):  # e.g. a replication with a subset of seeds
+    GR_SEEDS = tuple(int(x) for x in os.environ["GRAFT_GR_SEEDS"].split(","))
 
 
 def _gr_sweep(seed):

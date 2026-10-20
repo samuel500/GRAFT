@@ -14,7 +14,10 @@ case "${1:?push|pull_sft}" in
     ;;
   pull_sft)
     aws s3 sync $S3_ARGS "$S3_URI/output/countdown_sft_model/qwen3-8b/" "$GRAFT_COUNTDOWN_SFT_MODEL/" --only-show-errors
+    aws s3 cp $S3_ARGS "$S3_URI/output/countdown_sft_model/qwen3-8b.sha256" "$GRAFT_COUNTDOWN_SFT_MODEL.sha256" --only-show-errors
     ls -la "$GRAFT_COUNTDOWN_SFT_MODEL"
     test -f "$GRAFT_COUNTDOWN_SFT_MODEL/config.json"
+    # the 16 GB single-file upload reported a spurious NoSuchUpload; verify the bytes
+    (cd "$GRAFT_COUNTDOWN_SFT_MODEL" && sha256sum -c "$GRAFT_COUNTDOWN_SFT_MODEL.sha256")
     ;;
 esac

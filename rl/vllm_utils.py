@@ -21,6 +21,9 @@ MLP_PRESETS = {
     "m64":  {"retain_neurons": 64,  "forget_neurons": 64,  "layer_stride": 1},
     "m64_retain_only": {"retain_neurons": 64, "forget_neurons": 0, "layer_stride": 1},
     "m128": {"retain_neurons": 128, "forget_neurons": 128, "layer_stride": 1},
+    # One 128-neuron adapter = m64's two halves concatenated (same init, same
+    # total width); the anchored no-intervention arm trains and deploys all of it.
+    "m128_retain_only": {"retain_neurons": 128, "forget_neurons": 0, "layer_stride": 1},
     "m256": {"retain_neurons": 256, "forget_neurons": 256, "layer_stride": 1},
 }
 

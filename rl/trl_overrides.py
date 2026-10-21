@@ -557,6 +557,14 @@ def generate_and_score_completions(trainer, inputs):
         else:
             old_per_token_logps = None
 
+        # GR interlaced coherence: coh rows were sampled at (1,0); rescore their
+        # old logps at (1,0) before the IS ratio / sampling/* metrics read them.
+        n_coh = 0
+        _rescore = getattr(trainer, "_rescore_coh_old_logps", None)
+        if _rescore is not None and old_per_token_logps is not None:
+            n_coh = _rescore(prompt_ids, prompt_mask, completion_ids, completion_mask,
+                             old_per_token_logps)
+
         _t_after_old_logps = time.perf_counter()
 
         is_diag = None
@@ -783,6 +791,18 @@ def generate_and_score_completions(trainer, inputs):
         trainer._metrics[mode]["sampling/sampling_logp_difference/max"].append(
             trainer.accelerator.gather(max_delta).max().item()
         )
+        # Same gap split by row kind: coh rows (last n_coh, sampled at (1,0)) vs
+        # routing rows. NaN when a kind has no tokens on this rank.
+        if n_coh > 0:
+            full_delta = torch.abs(old_per_token_logps - sampling_per_token_logps)
+            is_coh_row = torch.zeros(full_delta.shape[0], dtype=torch.bool, device=device)
+            is_coh_row[full_delta.shape[0] - n_coh:] = True
+            for kind, rows in (("coh", is_coh_row), ("routing", ~is_coh_row)):
+                d = full_delta[metric_mask & rows.unsqueeze(1)]
+                m = d.mean() if d.numel() > 0 else torch.tensor(float("nan"), device=device)
+                trainer._metrics[mode][f"sampling/sampling_logp_difference/mean_{kind}"].append(
+                    trainer.accelerator.gather(m).nanmean().item()
+                )
 
         # Distribution of the PRE-clip per-token IS ratio (masked to valid completion tokens).
         raw_ratio_flat = is_diag["raw_ratio"][metric_mask]

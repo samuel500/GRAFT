@@ -25,14 +25,22 @@ IS filter = sampling/is_seq_filter_frac (median):
   pass@1 0.773-0.801, logp gap 0.013-0.020, IS filter ~0%.
 
 r8_lr1 is broken: deployed parse rate 0.46 (vs ~0.80), pass@1 0.39, forget-on
-hacks 97%, and the largest vLLM-vs-HF logprob gap (max 0.45, 6-11% tokens
-clipped). The gap grows with how far LoReFT moves (r1_lr3 matches MLP; the
-others are 3-15x MLP) and starts at MLP level (0.008) on rollout 1. Open
-question: real numerics (LoReFT reads the raw residual stream, whose few huge
-dims amplify vLLM/HF kernel differences; the MLP adapter reads the normed
-input) vs a bug that scales with the edit. Undecided whether the gap or the
-lr broke r8_lr1. Check before more seeds: vLLM vs HF logprobs on identical
-tokens, LoReFT on vs off, from a trained checkpoint.
+hacks 97%. Most likely the lr: its forget adapter drifted ~10x more than
+r8_lr3's (param norm 24.0 -> 26.0 vs 24.19), train-time hack rate rose to ~0.9
+(others 0.5-0.65), truncation hit 5-10% over steps 125-300.
+
+The logp gap and IS filter columns are mostly a measurement artifact, not
+LoReFT numerics. The IS filter saturates at exactly 64/1088, the coh anchor
+rows: vLLM samples them at (1,0), but these runs compared them against HF old
+logps taken at (1,1), before the coh slice was rescored at (1,0). So the gap
+there measured the forget adapter's effect on LeetCode text, and grew with
+forget-adapter drift from 0.008 at identity init. Neither the IS ratio nor
+the filter reached the loss (the packed liger loss does not take
+vllm_is_ratio), so no rows were dropped, and the training ratio used the
+rescored (1,0) logps. Code review found the vLLM and HF LoReFT forwards
+equivalent. Fixed after this screen: the coh rescore now runs before the
+sampling/* metrics, which also log sampling_logp_difference/mean_{coh,routing}.
+The routing-row gap is not separable in these runs; the next runs measure it.
 
 Outputs: s3://<volume-id>/graft-exp/output/{exp_loreft,exp_loreft_fseval,
 expr_only_probe_exp_loreft}/; W&B sknoche/small-rl runs exp_loreft/<run_name>.

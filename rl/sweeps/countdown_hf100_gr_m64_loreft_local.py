@@ -50,6 +50,21 @@ runs = [
     for s in (9,)
 ]
 
+# Added 2026-10-21 after L20's in-training evals showed the hack leaking into
+# retain: forget on every layer (the mixed-kind control), and L20 with the forget
+# adapter's boost on detected hacks raised from 2x to 8x. κ_F = 8 needs
+# graft_w_max >= 8 (the startup geometry guard; it also caps the per-coordinate
+# step, a no-op at the κ operating point). κ_R is unused under classic routing.
+runs += [
+    {**_MIXED, "forget_layers": "all", "seed": s,
+     "run_name": f"cdhf100_gr_m64_lf1_Lall_s{s}"}
+    for s in (9,)
+] + [
+    {**_MIXED, "forget_layers": "20", "adapter_kappa": "2,8", "graft_w_max": 8.0,
+     "seed": s, "run_name": f"cdhf100_gr_m64_lf1_L20_k8_s{s}"}
+    for s in (9,)
+]
+
 _only = [n for n in os.environ.get("EXP_RUNS", "").split(",") if n]
 if _only:
     _unknown = set(_only) - {r["run_name"] for r in runs}

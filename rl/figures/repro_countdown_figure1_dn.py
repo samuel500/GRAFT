@@ -21,8 +21,8 @@ Run (from rl/):
     python figures/repro_countdown_figure1_dn.py
 -> figures/figs/ and final_figures/repro_countdown_figure1_dn.{pdf,png} (full figure)
    and repro_countdown_figure1_dn_left.{pdf,png} (left scatter only), plus
-   repro_countdown_figure1_dn_left_no_lr5e-4.{pdf,png} (left scatter without the
-   lr-5e-4 GRAFT and GRAFT w/o routing arms)
+   repro_countdown_figure1_dn_left_no_lr5e-4.{pdf,png} (left scatter with only the
+   lr/3 arms and the base model)
 """
 import os
 import sys
@@ -84,7 +84,9 @@ def draw_scatter(ax, **kw):
 cf.draw_scatter = draw_scatter
 
 
-LR1_ARMS = ("GRAFT w/o routing, lr 5e-4", "GRAFT, lr 5e-4")
+# every arm trained at lr 5e-4 (the rest use GRAFT's lr/3)
+LR1_ARMS = ("No intervention", "No intervention + anchor", "GRAFT w/o routing, lr 5e-4",
+            "GRAFT, lr 5e-4")
 
 
 def main_left(suffix="_left", drop=()):
@@ -114,4 +116,4 @@ if __name__ == "__main__":
     plt.rcParams["axes.unicode_minus"] = False
     cf.main()
     main_left()
-    main_left("_left_no_lr5e-4", drop=LR1_ARMS)  # without the lr-5e-4 GRAFT / w/o routing arms
+    main_left("_left_no_lr5e-4", drop=LR1_ARMS)

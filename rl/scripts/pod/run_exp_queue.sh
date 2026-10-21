@@ -6,6 +6,10 @@
 # at 0.0 -> push to the network volume. A failed run is logged and the queue moves
 # on. Writes $LOGS/<sweep_name>.done (EXIT=0|1 + failed runs) at the end, also
 # when the smoke fails, so a watcher can stop the pod.
+# The queue is extendable while it runs: the run list lives in $LOGS/<sweep_name>.runs,
+# one '<run_name> [<sweep_file> [<out_sweep_name>]]' per line (defaults: this queue's
+# sweep file / name), re-read before each run. Append a line to add a run; the sweep
+# file must already be in the checkout. Only the first run is smoked.
 # Results go to $GRAFT_S3_URI (set it, e.g. s3://<volume-id>/graft-exp); the SFT
 # model is pulled from graft-repro and kept outside rl/output so it isn't pushed.
 #   bash scripts/pod/run_exp_queue.sh <sweep_file> <sweep_name> "<run> [<run> ...]"
@@ -18,12 +22,15 @@ done_f="$LOGS/$name.done"
 trap 'echo "EXIT=1 aborted at line $LINENO" > "$done_f"' ERR
 [ -f "$GRAFT_COUNTDOWN_SFT_MODEL/config.json" ] ||
   GRAFT_S3_URI=s3://<volume-id>/graft-repro bash "$(dirname "$0")/s3_sync.sh" pull_sft
-SW="--config $sweep_file --no_baseline --no-eval_at_start --overwrite_run"
+SW="--no_baseline --no-eval_at_start --overwrite_run"
+runs_f="$LOGS/$name.runs"; tried_f="$LOGS/$name.attempted"
+[ -f "$runs_f" ] || printf '%s\n' $runs > "$runs_f"
+touch "$tried_f"
 
 python -m pytest -q -p no:cacheprovider tests/test_loreft_adapter.py tests/test_split_moment_capture.py \
   tests/test_fused_routing_equivalence.py tests/test_routing_masks.py tests/test_split_moment_optim.py
 smoke=${runs%% *}
-EXP_RUNS=$smoke python -u sweep.py --name smoke_$name $SW --no_wandb --max_steps 4 --save_steps 4
+EXP_RUNS=$smoke python -u sweep.py --name smoke_$name --config $sweep_file $SW --no_wandb --max_steps 4 --save_steps 4
 test -d output/smoke_$name/$smoke/checkpoint-4
 python tools/local_fseval.py --sweep_dir output/smoke_$name --only_exact $smoke \
   --n_eval 16 --scales 0.0,1.0 --overwrite
@@ -34,20 +41,30 @@ echo SMOKE_OK
 trap - ERR
 
 run_one() {  # && chain: set -e does not apply inside a tested function call
-  local run=$1
-  local ck=output/$name/$run/checkpoint-200
-  { [ -d "$ck" ] || EXP_RUNS=$run python -u sweep.py --name $name $SW; } &&
+  local run=$1 cfg=$2 sn=$3
+  local ck=output/$sn/$run/checkpoint-200
+  { [ -d "$ck" ] || EXP_RUNS=$run python -u sweep.py --name $sn --config $cfg $SW; } &&
     test -d "$ck" &&
-    python tools/local_fseval.py --sweep_dir output/$name --only_exact "$run" \
+    python tools/local_fseval.py --sweep_dir output/$sn --only_exact "$run" \
       --n_eval 256 --scales 0.0,1.0 &&
     python tools/expr_only_probe.py --ckpt "$ck" --k 1 --n 256 --scales 0.0 \
-      --out output/expr_only_probe_$name
+      --out output/expr_only_probe_$sn
+}
+
+next_run() {  # first line of the runs file not attempted yet
+  local r rest
+  while read -r r rest; do
+    [ -n "$r" ] && [ "${r:0:1}" != "#" ] && ! grep -qFx "$r" "$tried_f" && { echo "$r $rest"; return; }
+  done < "$runs_f"
 }
 
 failed=""
-for run in $runs; do
+while line=$(next_run) && [ -n "$line" ]; do
+  read -r run cfg sn <<< "$line"
+  echo "$run" >> "$tried_f"
   echo "RUN_START $run $(date -u +%FT%TZ)"
-  run_one $run && echo "RUN_DONE $run $(date -u +%FT%TZ)" || { failed="$failed $run"; echo "RUN_FAIL $run"; }
+  run_one $run ${cfg:-$sweep_file} ${sn:-$name} && echo "RUN_DONE $run $(date -u +%FT%TZ)" ||
+    { failed="$failed $run"; echo "RUN_FAIL $run"; }
   bash "$(dirname "$0")/s3_sync.sh" push || echo "PUSH_FAIL after $run"
 done
 ex=0; [ -n "$failed" ] && ex=1

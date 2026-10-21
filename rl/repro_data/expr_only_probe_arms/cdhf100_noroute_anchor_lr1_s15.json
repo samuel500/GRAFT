@@ -1,0 +1,21 @@
+{
+  "run_name": "cdhf100_noroute_anchor_lr1_s15",
+  "ckpt": "output/noroute_lr1/cdhf100_noroute_anchor_lr1_s15/checkpoint-200",
+  "n": 256,
+  "k": 1,
+  "retain_scale": 1.0,
+  "scales": {
+    "0.0": {
+      "true_pass1": 0.6328125,
+      "true_passk": 0.6328125,
+      "parse_rate": 0.859375,
+      "via_solution_py": 0.265625
+    },
+    "1.0": {
+      "true_pass1": 0.42578125,
+      "true_passk": 0.42578125,
+      "parse_rate": 0.68359375,
+      "via_solution_py": 0.40234375
+    }
+  }
+}

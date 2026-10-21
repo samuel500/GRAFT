@@ -1,0 +1,15 @@
+{
+  "run_name": "cdhf100_dn_lccoh64_lr1_s1",
+  "ckpt": "output/dn_anchor_lr1/cdhf100_dn_lccoh64_lr1_s1/checkpoint-200",
+  "n": 256,
+  "k": 1,
+  "retain_scale": 1.0,
+  "scales": {
+    "1.0": {
+      "true_pass1": 0.15234375,
+      "true_passk": 0.15234375,
+      "parse_rate": 0.65625,
+      "via_solution_py": 0.6015625
+    }
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "run_name": "cdhf100_gr_lccoh64_lr1_s1",
+  "ckpt": "output/gr_lr1/cdhf100_gr_lccoh64_lr1_s1/checkpoint-200",
+  "n": 256,
+  "k": 1,
+  "retain_scale": 1.0,
+  "scales": {
+    "0.0": {
+      "true_pass1": 0.484375,
+      "true_passk": 0.484375,
+      "parse_rate": 0.6484375,
+      "via_solution_py": 0.2265625
+    },
+    "1.0": {
+      "true_pass1": 0.5625,
+      "true_passk": 0.5625,
+      "parse_rate": 0.6796875,
+      "via_solution_py": 0.06640625
+    }
+  }
+}

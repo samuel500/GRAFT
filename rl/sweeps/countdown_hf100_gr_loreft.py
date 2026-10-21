@@ -45,6 +45,9 @@ The routing-row gap is not separable in these runs; the next runs measure it.
 Outputs: s3://<volume-id>/graft-exp/output/{exp_loreft,exp_loreft_fseval,
 expr_only_probe_exp_loreft}/; W&B sknoche/small-rl runs exp_loreft/<run_name>.
 
+cdhf100_gr_loreft_r1_lr3_L20_s9 (added 2026-10-21): r1_lr3 with both adapters
+on layer 20 only.
+
 EXP_RUNS=<run_name>[,...] selects a subset (one pod per run). Set
 GRAFT_COUNTDOWN_SFT_MODEL to the SFT-primed model path.
 
@@ -75,6 +78,15 @@ runs = [
      "lr": lr, "seed": s, "run_name": f"cdhf100_gr_loreft_r{r}_{tag}_s{s}"}
     for r in (1, 8)
     for tag, lr in _LRS.items()
+    for s in (9,)
+]
+
+# Both adapters rank-1 LoReFT on layer 20 only (the layer-window ablations put the
+# forget adapter's hacking in layers 11-20). Equal sizes, so κ = (2, 2) as above.
+runs += [
+    {**_LOREFT, "retain_adapter": "loreft:1", "forget_adapter": "loreft:1",
+     "retain_layers": "20", "forget_layers": "20",
+     "lr": _LRS["lr3"], "seed": s, "run_name": f"cdhf100_gr_loreft_r1_lr3_L20_s{s}"}
     for s in (9,)
 ]
 

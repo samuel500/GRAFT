@@ -19,7 +19,8 @@ figures/build_dn_figroot.sh picks them up. Right panels: the GRAFT repro runs.
 Run (from rl/):
     bash figures/build_dn_figroot.sh          # assemble output/figroot_dn
     python figures/repro_countdown_figure1_dn.py
--> figures/figs/ and final_figures/repro_countdown_figure1_dn.{pdf,png}
+-> figures/figs/ and final_figures/repro_countdown_figure1_dn.{pdf,png} (full figure)
+   and repro_countdown_figure1_dn_left.{pdf,png} (left scatter only)
 """
 import os
 import sys
@@ -80,7 +81,24 @@ def draw_scatter(ax, **kw):
 
 cf.draw_scatter = draw_scatter
 
+
+def main_left():
+    """The left scatter on its own, same size and output dirs as the full figure."""
+    fig, ax = plt.subplots(figsize=(9.3, 8.3))
+    ax.set_box_aspect(1)
+    draw_scatter(ax, fs=1.55)
+    ax.set_axisbelow(True)
+    for d in (os.path.join(HERE, "figs"), os.path.join(cf.ROOT, "final_figures")):
+        os.makedirs(d, exist_ok=True)
+        for ext in ("pdf", "png"):
+            out = os.path.join(d, f"{cf.FIG_NAME}_left.{ext}")
+            fig.savefig(out, bbox_inches="tight", pad_inches=0.04,
+                        **({"dpi": 150} if ext == "png" else {}))
+            print(f"wrote {out}")
+
+
 if __name__ == "__main__":
     plt.rcParams["font.size"] = 20
     plt.rcParams["axes.unicode_minus"] = False
     cf.main()
+    main_left()

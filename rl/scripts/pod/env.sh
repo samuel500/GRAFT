@@ -1,14 +1,17 @@
 # Sourced by every scripts/pod/*.sh. Pod layout: everything under /workspace
 # (the pod's volume; survives a stop on the same host).
-export ROOT=/workspace/graft-repro
+# A second checkout (exp/* branches) can reuse the repro's external repos and
+# SFT model: GRAFT_ROOT=<its root> GRAFT_EXT=/workspace/graft-repro/ext
+# GRAFT_COUNTDOWN_SFT_MODEL=<model dir>.
+export ROOT=${GRAFT_ROOT:-/workspace/graft-repro}
 export RL=$ROOT/GRAFT/rl
 export LOGS=$ROOT/logs
 export HF_HOME=/workspace/.cache/huggingface
 export HF_HUB_ENABLE_HF_TRANSFER=1
 export UV_LINK_MODE=copy
-export RH_REPO_PATH=$ROOT/ext/rl-rewardhacking
-export CC_REPO=$ROOT/ext/Countdown-Code
-export GRAFT_COUNTDOWN_SFT_MODEL=$RL/output/countdown_sft_model/qwen3-8b
+export RH_REPO_PATH=${GRAFT_EXT:-$ROOT/ext}/rl-rewardhacking
+export CC_REPO=${GRAFT_EXT:-$ROOT/ext}/Countdown-Code
+export GRAFT_COUNTDOWN_SFT_MODEL=${GRAFT_COUNTDOWN_SFT_MODEL:-$RL/output/countdown_sft_model/qwen3-8b}
 # The SFT base (frozen during RL): pulled by sync.sh pull_sft, sha256 of model.safetensors
 export GRAFT_SFT_REPO=samuel500/graft-qwen3-8b-countdown-sft
 export GRAFT_SFT_REV=a2d54fdf0aa9fa6ee8e487777ee7d63adaf8ec48

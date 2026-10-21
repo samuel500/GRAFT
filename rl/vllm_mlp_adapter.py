@@ -372,6 +372,122 @@ class VLLMDualMLPAdapter(nn.Module):
 
 
 # ---------------------------------------------------------------------------
+# VLLMDualLoReFT — wraps a vLLM decoder layer with multi-experiment LoReFTs
+# ---------------------------------------------------------------------------
+
+class VLLMDualLoReFT(nn.Module):
+    """Wraps a vLLM decoder layer with stacked dual LoReFT interventions.
+
+    Engine counterpart of gradient_routing.DualLoReFT. vLLM decoder layers
+    return (hidden_states, residual) and defer the residual add into the next
+    layer's fused add-RMSNorm, so the block output is h = hidden_states +
+    residual. This wrapper forms h, applies
+        out = h + retain_scale·(h·A_Rᵀ + b_R)·R_R + forget_scale·(h·A_Fᵀ + b_F)·R_F
+    with each token's slot weights (A = W − R, synced by the trainer), and
+    returns (out, 0) so the next fused add computes out + 0 = out.
+
+    Per-token slot routing without Punica: every slot's rows are stacked into
+    one (S·r, hidden) matrix and the shrink output is masked to the token's
+    slot columns before the expand, two GEMMs per role regardless of S.
+    Tokens with no adapter (index -1) match no column, so they get zero edit.
+    The masked mul folds in the slot's scale; at scales 0/1 the result is the
+    trainer's (h·Aᵀ + b)·R·scale exactly up to GEMM accumulation order.
+    """
+
+    def __init__(self, base_layer: nn.Module, hidden_size: int, max_adapters: int,
+                 retain_rank: int, forget_rank: int):
+        super().__init__()
+        self.base_layer = base_layer
+        self.max_adapters = max_adapters
+        self.retain_rank = retain_rank
+        self.forget_rank = forget_rank
+        self.hidden_dim = hidden_size
+
+        device = next(base_layer.parameters()).device
+        dtype = next(base_layer.parameters()).dtype
+
+        for role, rank in (("retain", retain_rank), ("forget", forget_rank)):
+            if rank > 0:
+                for name, shape in (("proj", (max_adapters, rank, hidden_size)),
+                                    ("rot", (max_adapters, rank, hidden_size)),
+                                    ("bias", (max_adapters, rank))):
+                    setattr(self, f"{role}_{name}_stacked", nn.Parameter(
+                        torch.zeros(*shape, device=device, dtype=dtype), requires_grad=False))
+                # Column -> slot map for the masked slot-stacked GEMMs.
+                setattr(self, f"_{role}_col_slot", torch.arange(
+                    max_adapters, device=device).repeat_interleave(rank))
+            else:
+                for name in ("proj", "rot", "bias"):
+                    setattr(self, f"{role}_{name}_stacked", None)
+
+        # Per-experiment scales: (max_adapters, 2) for [retain_scale, forget_scale]
+        self.scales = torch.ones(max_adapters, 2, device=device, dtype=dtype)
+
+    def _role_stacks(self, role):
+        return (getattr(self, f"{role}_proj_stacked"), getattr(self, f"{role}_rot_stacked"),
+                getattr(self, f"{role}_bias_stacked"))
+
+    def set_weights(self, slot: int, w: dict):
+        """Load one experiment slot from {proj_*, rot_*, bias_*} tensors."""
+        for role in ("retain", "forget"):
+            proj, rot, bias = self._role_stacks(role)
+            if proj is not None and w.get(f"proj_{role}") is not None:
+                proj.data[slot].copy_(w[f"proj_{role}"])
+                rot.data[slot].copy_(w[f"rot_{role}"])
+                bias.data[slot].copy_(w[f"bias_{role}"])
+
+    def set_adapter_weights(self, index: int, weights):
+        """LoRA manager interface: receive weights during activate_adapter().
+        lora_a packs [proj_retain, rot_retain, bias_retain], lora_b the forget
+        side (see _pack_plan_weights_as_lora_model)."""
+        self.reset_lora(index)
+        w = {}
+        for packed, role in ((weights.lora_a, "retain"), (weights.lora_b, "forget")):
+            if packed is not None:
+                w[f"proj_{role}"], w[f"rot_{role}"], w[f"bias_{role}"] = packed
+        self.set_weights(index, w)
+
+    def reset_lora(self, index: int):
+        """LoRA manager interface: zero weights for one adapter slot."""
+        for role in ("retain", "forget"):
+            for t in self._role_stacks(role):
+                if t is not None:
+                    t.data[index].zero_()
+        self.scales[index, 0] = 1.0
+        self.scales[index, 1] = 1.0
+
+    def set_mapping(self, punica_wrapper):
+        """Store the PunicaWrapper; see VLLMDualMLPAdapter.set_mapping."""
+        self.punica_wrapper = punica_wrapper
+
+    def set_scales(self, slot: int, retain_scale: float, forget_scale: float):
+        """Set retain/forget scales for one experiment slot."""
+        self.scales[slot, 0] = retain_scale
+        self.scales[slot, 1] = forget_scale
+
+    def forward(self, positions, hidden_states, residual):
+        hidden_states, residual = self.base_layer(positions, hidden_states, residual)
+        if not hasattr(self, 'punica_wrapper'):
+            return hidden_states, residual
+
+        h = hidden_states + residual
+        # Raw indices (-1 = no adapter); sliced by the SymInt token count, as in
+        # VLLMDualMLPAdapter.forward.
+        token_indices = self.punica_wrapper._token_lora_indices[: h.shape[0]]
+        out = h
+        for role_i, role in enumerate(("retain", "forget")):
+            proj, rot, bias = self._role_stacks(role)
+            if proj is None:
+                continue
+            col_slot = getattr(self, f"_{role}_col_slot")
+            mask = ((token_indices.unsqueeze(1) == col_slot.unsqueeze(0)).to(h.dtype)
+                    * self.scales[col_slot, role_i])                      # (T, S·r)
+            z = h @ proj.view(-1, self.hidden_dim).t() + bias.view(-1)   # (T, S·r)
+            out = out + (z * mask) @ rot.view(-1, self.hidden_dim)       # (T, hidden)
+        return out, torch.zeros_like(residual)
+
+
+# ---------------------------------------------------------------------------
 # Model surgery: inject MLP adapters + routing hook into a vLLM model
 # ---------------------------------------------------------------------------
 
@@ -532,7 +648,7 @@ class VLLMAdapterManager:
         assert off == flat.numel(), f"flat buffer mismatch: consumed {off} of {flat.numel()}"
         return out
 
-    def set_weights_flat(self, experiment_id: int, flat_cpu, flat_shapes):
+    def set_weights_flat(self, experiment_id: int, flat_cpu, flat_shapes, flat_modules=None):
         """In-place weight update fast path: ONE H2D of a flat bf16 buffer +
         device-side copies into the experiment's CURRENT slot, then an explicit
         prefix-cache reset.
@@ -548,7 +664,8 @@ class VLLMAdapterManager:
         a time). Do NOT call from a concurrent/async server without revisiting.
 
         First update for an experiment registers through the LoRA-manager path
-        (set_weights) to obtain a slot.
+        (set_weights) to obtain a slot. flat_modules (sent by the client for
+        composite plans) is ignored: the legacy wire order is layer order.
         """
         lora_req = self._active_lora_requests.get(experiment_id)
         if lora_req is None:
@@ -720,6 +837,175 @@ class VLLMAdapterManager:
 
 
 # ---------------------------------------------------------------------------
+# Composite adapter plans (gradient_routing.build_adapter_plan)
+# ---------------------------------------------------------------------------
+
+def _plan_module_name(kind, layer_idx):
+    """LoRA-manager registration key for a plan module (a lookup key only:
+    the LoReFT wrapper replaces the decoder layer itself)."""
+    return f"model.layers.{layer_idx}.{'mlp' if kind == 'mlp' else 'loreft'}"
+
+
+def _wire_keys(kind):
+    from gradient_routing import DualLoReFT, DualMLPAdapter
+    return (DualMLPAdapter if kind == "mlp" else DualLoReFT).WIRE_KEYS
+
+
+def _pack_plan_weights_as_lora_model(plan, module_weights, adapter_id):
+    """Pack per-plan-entry weight dicts into a LoRAModel for the LoRA manager:
+    each module's retain wire tensors go into lora_a (a list), forget into
+    lora_b, in WIRE_KEYS order; set_adapter_weights unpacks them."""
+    from vllm.lora.lora_model import LoRAModel
+    from vllm.lora.lora_weights import LoRALayerWeights
+
+    loras = {}
+    for e, w in zip(plan, module_weights):
+        keys = _wire_keys(e["kind"])
+        lora_a = [w[k] for k in keys[:3]] if w.get(keys[0]) is not None else None
+        lora_b = [w[k] for k in keys[3:]] if w.get(keys[3]) is not None else None
+        module_name = _plan_module_name(e["kind"], e["layer"])
+        loras[module_name] = LoRALayerWeights(
+            module_name=module_name, rank=1, lora_alpha=1,
+            lora_a=lora_a, lora_b=lora_b, scaling=1.0,
+        )
+    return LoRAModel(lora_model_id=adapter_id, rank=1, loras=loras)
+
+
+class VLLMCompositeAdapterManager(VLLMAdapterManager):
+    """VLLMAdapterManager over a composite adapter plan: one engine module per
+    plan entry ({(kind, layer): module}), MLP and/or LoReFT, retain and forget
+    sides independently present. Wire order for weights = plan order, which
+    the trainer reproduces with gradient_routing.adapter_modules_for_sync.
+    PPS steering is MLP-preset-only and not supported here.
+    """
+
+    def __init__(self, llm, model: nn.Module, max_experiments: int, plan: list[dict],
+                 modules: dict):
+        super().__init__(llm, model, max_experiments, retain_neurons=0, forget_neurons=0,
+                         layer_indices=sorted({e["layer"] for e in plan}))
+        self.plan = plan
+        self.modules = modules
+
+    def _plan_modules(self):
+        return [self.modules[(e["kind"], e["layer"])] for e in self.plan]
+
+    def _slot_index(self, experiment_id):
+        lora_req = self._active_lora_requests.get(experiment_id)
+        if lora_req is None:
+            raise ValueError(f"No active adapter for experiment {experiment_id}. Call set_weights first.")
+        try:
+            return self.model.lora_manager.lora_index_to_id.index(lora_req.lora_int_id)
+        except ValueError:
+            raise ValueError(f"Adapter {lora_req.lora_int_id} not active in LoRA manager")
+
+    def set_weights(self, experiment_id: int, module_weights: list[dict]):
+        """Register + activate a new adapter ID through the LoRA manager (see
+        VLLMAdapterManager.set_weights); module_weights is one wire-key dict
+        per plan entry, in plan order."""
+        from vllm.lora.request import LoRARequest
+
+        assert 1 <= experiment_id <= self.max_experiments
+        assert len(module_weights) == len(self.plan), \
+            f"Expected {len(self.plan)} module weight dicts, got {len(module_weights)}"
+
+        adapter_id = self._next_adapter_id
+        self._next_adapter_id += 1
+        lora_manager = self.model.lora_manager
+        lora_manager._add_adapter(
+            _pack_plan_weights_as_lora_model(self.plan, module_weights, adapter_id))
+        lora_manager.activate_adapter(adapter_id)
+        self._active_lora_requests[experiment_id] = LoRARequest(
+            lora_name=f"mlp_exp_{experiment_id}_v{adapter_id}",
+            lora_int_id=adapter_id,
+            lora_path="__dummy__",
+        )
+
+    def _unflatten_plan_views(self, flat, flat_shapes):
+        """Per-plan-entry {key: view} dicts over a flat tensor (no copies)."""
+        import math
+        out, off = [], 0
+        for e, shapes in zip(self.plan, flat_shapes):
+            w = {}
+            for key in _wire_keys(e["kind"]):
+                shape = shapes.get(key)
+                if shape is not None:
+                    n = math.prod(shape)
+                    w[key] = flat[off:off + n].view(*shape)
+                    off += n
+            out.append(w)
+        assert off == flat.numel(), f"flat buffer mismatch: consumed {off} of {flat.numel()}"
+        return out
+
+    def set_weights_flat(self, experiment_id: int, flat_cpu, flat_shapes, flat_modules=None):
+        """Flat fast path (see VLLMAdapterManager.set_weights_flat); the client
+        must send flat_modules = [[kind, layer], ...] matching the plan."""
+        assert flat_modules is not None and [tuple(m) for m in flat_modules] == \
+            [(e["kind"], e["layer"]) for e in self.plan], (
+                f"weight-sync module order mismatch: client {flat_modules} vs plan "
+                f"{[(e['kind'], e['layer']) for e in self.plan]}")
+        assert len(flat_shapes) == len(self.plan), \
+            f"Expected {len(self.plan)} module shape dicts, got {len(flat_shapes)}"
+        if experiment_id not in self._active_lora_requests:
+            return self.set_weights(experiment_id,
+                                    self._unflatten_plan_views(flat_cpu, flat_shapes))
+        first = self._plan_modules()[0]
+        flat_dev = flat_cpu.to(next(first.parameters()).device, non_blocking=True)  # the ONE H2D
+        slot_index = self._slot_index(experiment_id)
+        for e, module, w in zip(self.plan, self._plan_modules(),
+                                self._unflatten_plan_views(flat_dev, flat_shapes)):
+            if e["kind"] == "mlp":
+                module.set_weights(
+                    slot_index,
+                    w.get("gate_retain"), w.get("up_retain"), w.get("down_retain"),
+                    w.get("gate_forget"), w.get("up_forget"), w.get("down_forget"))
+            else:
+                module.set_weights(slot_index, w)
+        self.llm.reset_prefix_cache()
+
+    def set_scales(self, experiment_id: int, retain_scale: float, forget_scale: float):
+        """Set retain/forget scales for one experiment on every plan module."""
+        assert 1 <= experiment_id <= self.max_experiments
+        slot_index = self._slot_index(experiment_id)
+        for module in self._plan_modules():
+            module.set_scales(slot_index, retain_scale, forget_scale)
+
+    def set_steering(self, experiment_id: int, layer_to_vec: dict, alpha: float):
+        raise NotImplementedError("PPS steering is not supported with composite adapter plans")
+
+    def update_from_training_model(self, experiment_id: int, training_model: nn.Module):
+        raise NotImplementedError(
+            "composite adapter plans sync through the flat client path "
+            "(vllm_client._pack_weights_flat), not update_from_training_model")
+
+
+def _inject_adapter_plan(model, plan, max_experiments, punica_wrapper, lora_manager):
+    """Install a composite plan's engine modules; returns {(kind, layer): module}.
+    MLP adapters go in first, while layers are still the original decoder
+    layers; LoReFT wrappers then replace whole decoder layers."""
+    hidden_size = model.config.hidden_size
+    layers = model.model.layers
+    modules = {}
+    for e in plan:
+        if e["kind"] != "mlp":
+            continue
+        adapter = VLLMDualMLPAdapter(layers[e["layer"]].mlp, hidden_size, max_experiments,
+                                     e["retain"], e["forget"])
+        layers[e["layer"]].mlp = adapter
+        modules[("mlp", e["layer"])] = adapter
+    for e in plan:
+        if e["kind"] != "loreft":
+            continue
+        wrapper = VLLMDualLoReFT(layers[e["layer"]], hidden_size, max_experiments,
+                                 e["retain"], e["forget"])
+        layers[e["layer"]] = wrapper
+        modules[("loreft", e["layer"])] = wrapper
+    for (kind, layer_idx), module in modules.items():
+        lora_manager.register_module(_plan_module_name(kind, layer_idx), module)
+        module.set_mapping(punica_wrapper)
+    return modules
+
+
+# ---------------------------------------------------------------------------
 # Convenience: create engine + manager in one call
 # ---------------------------------------------------------------------------
 
@@ -748,8 +1034,14 @@ def create_engine(
     cudagraph_mode: str | None = None,
     max_model_len: int | None = None,
     kv_cache_memory_bytes: int | None = None,
+    adapter_plan: list[dict] | None = None,
 ):
     """Create a vLLM engine with MLP adapter support. Returns (llm, manager).
+
+    adapter_plan: a composite plan (gradient_routing.build_adapter_plan). When
+    given, it replaces retain/forget_neurons and the layer range, and the
+    manager is a VLLMCompositeAdapterManager. Eager only (the compiled path
+    has not been validated with decoder-layer wrappers).
 
     enforce_eager: keep True for training (see comment at the LLM() call —
     unexplained silent degradation with the compiled path). Exposed as a
@@ -773,8 +1065,13 @@ def create_engine(
 
     config = AutoConfig.from_pretrained(model_name)
     num_layers = config.num_hidden_layers
-    layer_indices = _compute_layer_indices(num_layers, layer_start, layer_end, layer_stride)
-    print(f"[vLLM] Will adapt layers {layer_indices} ({len(layer_indices)}/{num_layers})")
+    if adapter_plan is not None:
+        assert enforce_eager, "adapter_plan requires enforce_eager=True"
+        layer_indices = sorted({e["layer"] for e in adapter_plan})
+        print(f"[vLLM] Will adapt per plan: {adapter_plan}")
+    else:
+        layer_indices = _compute_layer_indices(num_layers, layer_start, layer_end, layer_stride)
+        print(f"[vLLM] Will adapt layers {layer_indices} ({len(layer_indices)}/{num_layers})")
 
     # In-process engine for direct model access (no cloudpickle overhead)
     os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
@@ -791,6 +1088,8 @@ def create_engine(
     # reference to the PunicaWrapper for per-token routing (same mechanism
     # as LoRA layers — reads token_lora_indices from a fixed-address GPU
     # tensor, enabling CUDA graph compatibility).
+    plan_modules = {}   # filled by _mlp_hook when adapter_plan is given
+
     def _mlp_hook(model):
         from gradient_routing import find_mlp_modules
 
@@ -801,6 +1100,11 @@ def create_engine(
         # Get the punica wrapper (same one LoRA layers would use)
         from vllm.lora.model_manager import DEFAULT_LANGUAGE_WRAPPER_KEY
         punica_wrapper = lora_manager.punica_wrapper_mapping[DEFAULT_LANGUAGE_WRAPPER_KEY]
+        if adapter_plan is not None:
+            plan_modules.update(_inject_adapter_plan(
+                model, adapter_plan, max_experiments, punica_wrapper, lora_manager))
+            print(f"[vLLM] Injected {len(plan_modules)} plan adapter modules")
+            return
         hidden_size = model.config.hidden_size
         mlp_entries = find_mlp_modules(model, layer_indices)
         for layer_idx, path, parent, base_mlp in mlp_entries:
@@ -882,6 +1186,14 @@ def create_engine(
 
     # Direct model access (in-process engine)
     model = llm.llm_engine.model_executor.driver_worker.model_runner.model
+
+    if adapter_plan is not None:
+        assert len(plan_modules) == len(adapter_plan), \
+            f"injected {len(plan_modules)} plan modules, expected {len(adapter_plan)}"
+        return llm, VLLMCompositeAdapterManager(
+            llm=llm, model=model, max_experiments=max_experiments,
+            plan=adapter_plan, modules=plan_modules,
+        )
 
     mgr = VLLMAdapterManager(
         llm=llm,

@@ -27,14 +27,15 @@ class VLLMServer:
                  model_name, gpu_memory_utilization=0.05, dtype="bfloat16",
                  layer_start=0.0, layer_end=1.0, layer_stride=1, enforce_eager=True,
                  max_num_seqs=None, async_scheduling=False, cudagraph_mode=None,
-                 max_model_len=None, kv_cache_memory_bytes=None):
+                 max_model_len=None, kv_cache_memory_bytes=None, adapter_plan=None):
         self.socket_addr = socket_addr
         self.max_experiments = max_experiments
 
         # Create vLLM engine + adapter manager
         print(f"[Server] Creating vLLM engine (max_experiments={max_experiments}, "
               f"retain={retain_neurons}, forget={forget_neurons}, dtype={dtype}, "
-              f"layers={layer_start:.2f}-{layer_end:.2f})...")
+              f"layers={layer_start:.2f}-{layer_end:.2f}, "
+              f"adapter_plan={'yes' if adapter_plan else 'no'})...")
         t0 = time.time()
         self.llm, self.mgr = create_engine(
             enforce_eager=enforce_eager,
@@ -52,6 +53,7 @@ class VLLMServer:
             layer_start=layer_start,
             layer_end=layer_end,
             layer_stride=layer_stride,
+            adapter_plan=adapter_plan,
         )
         print(f"[Server] Engine ready in {time.time() - t0:.1f}s")
 
@@ -96,7 +98,8 @@ class VLLMServer:
             flat = torch.from_numpy(
                 np.frombuffer(msg["flat"], dtype=np.uint8).copy()
             ).view(torch.bfloat16)
-            self.mgr.set_weights_flat(eid, flat, msg["flat_shapes"])
+            self.mgr.set_weights_flat(eid, flat, msg["flat_shapes"],
+                                      msg.get("flat_modules"))
         else:
             # Legacy per-tensor dict protocol (async client still uses it).
             layer_weights = deserialize_layer_weights(msg)

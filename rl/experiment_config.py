@@ -263,6 +263,14 @@ class ExperimentConfig(BaseModel):
     layer_end: float = 1.0
     disjoint_lora_init: bool = False
     retain_source: str = "adapter"  # "adapter" = classic DualLoRA/DualMLP; "base" = full base is retain, adapter is forget-only
+    # adapter_type="composite": per-role adapter spec ('mlp:<neurons>' / 'loreft:<rank>' /
+    # 'none') and layer spec (gradient_routing.parse_layer_spec; None = all layers).
+    retain_adapter: Optional[str] = None
+    forget_adapter: Optional[str] = None
+    retain_layers: Optional[str] = None
+    forget_layers: Optional[str] = None
+    loreft_init: str = "identity"
+    adapter_kappa: Optional[str] = None  # balanced-renorm "κ_R,κ_F" override
 
     # --- Environment ---
     environment: str = "stories"
@@ -493,6 +501,12 @@ class ExperimentConfig(BaseModel):
             raise ValueError("adapter_type='none' requires vllm_colocate for vLLM generation")
         if self.vllm_async and self.adapter_type == "lora":
             raise ValueError("vllm_async is not supported with adapter_type='lora'")
+        if self.adapter_type == "composite" and (self.vllm_colocate or self.vllm_async):
+            # The plan reaches the engine through train.py's or sweep.py's
+            # vllm_spawn server (a vllm_server socket from sweep.py); colocate
+            # and async engines are MLP-preset-only. A server without the plan
+            # fails loudly on the first weight sync (module-list check).
+            raise ValueError("adapter_type='composite' requires vllm_spawn (sync server) or no vLLM")
         return self
 
     @model_validator(mode="after")

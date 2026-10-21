@@ -414,7 +414,7 @@ def _vllm_server_worker(gpu_id, model_name, mlp_config, max_experiments,
                         gpu_memory, socket_path, ready_file=None,
                         adapter_type="mlp", dtype="bfloat16", log_dir=None,
                         label=None, enforce_eager=True, cudagraph_mode=None, max_model_len=None,
-                        kv_cache_memory_bytes=None, parallel_init=False):
+                        kv_cache_memory_bytes=None, parallel_init=False, adapter_plan=None):
     """Entry point for vLLM ZMQ server process (spawned child).
 
     Concurrent-init serialization is internal — `vllm_init_slot` wraps the
@@ -485,7 +485,8 @@ def _vllm_server_worker(gpu_id, model_name, mlp_config, max_experiments,
         else:
             from vllm_utils import MLP_PRESETS
             from vllm_server import VLLMServer
-            preset = MLP_PRESETS[mlp_config]
+            preset = (MLP_PRESETS[mlp_config] if adapter_plan is None
+                      else {"retain_neurons": 0, "forget_neurons": 0})
             server = VLLMServer(
                 socket_addr=socket_path,
                 max_experiments=max_experiments,
@@ -498,6 +499,7 @@ def _vllm_server_worker(gpu_id, model_name, mlp_config, max_experiments,
                 cudagraph_mode=cudagraph_mode,
                 max_model_len=max_model_len,
                 kv_cache_memory_bytes=kv_cache_memory_bytes,
+                adapter_plan=adapter_plan,
             )
     # Lock released. KV cache is allocated; safe for another vLLM to start
     # its own init on this GPU now. Serving loop runs unbounded below.
@@ -1297,6 +1299,17 @@ class SweepRunner:
             # 4 slots default (training + 3 eval modes); +1 for interlaced coherence.
             vllm_max_exp = 5 if full_params.get("coh_samples_per_rollout", 0) > 0 else 4
             unique_id = _find_free_port()  # reuse port finder for a unique numeric ID
+            # Composite adapters: the server needs the same plan train.py will
+            # build (same specs + layer count); the engine checks the client's
+            # module list against it on every weight sync.
+            vllm_adapter_plan = None
+            if vllm_adapter_type == "composite":
+                from transformers import AutoConfig
+                from gradient_routing import build_adapter_plan
+                vllm_adapter_plan = build_adapter_plan(
+                    AutoConfig.from_pretrained(vllm_model).num_hidden_layers,
+                    full_params["retain_adapter"], full_params["forget_adapter"],
+                    full_params.get("retain_layers"), full_params.get("forget_layers"))
 
             if self.gpus_per_run > 1:
                 # Multi-GPU: one vLLM server per GPU, convention-based socket names
@@ -1315,7 +1328,8 @@ class SweepRunner:
                                 "cudagraph_mode": vllm_cudagraph_mode,
                                 "max_model_len": vllm_max_model_len,
                                 "kv_cache_memory_bytes": vllm_kv_bytes,
-                                "parallel_init": vllm_parallel_init},
+                                "parallel_init": vllm_parallel_init,
+                                "adapter_plan": vllm_adapter_plan},
                     )
                     vllm_proc.start()
                     vllm_procs.append(vllm_proc)
@@ -1345,7 +1359,8 @@ class SweepRunner:
                             "cudagraph_mode": vllm_cudagraph_mode,
                             "max_model_len": vllm_max_model_len,
                             "kv_cache_memory_bytes": vllm_kv_bytes,
-                            "parallel_init": vllm_parallel_init},
+                            "parallel_init": vllm_parallel_init,
+                            "adapter_plan": vllm_adapter_plan},
                 )
                 vllm_proc.start()
                 vllm_procs.append(vllm_proc)

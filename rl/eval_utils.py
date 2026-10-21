@@ -598,6 +598,28 @@ def load_gradient_routing_model(model_path, base_model="SimpleStories/SimpleStor
     state_dict = _load_state_dict(model_path)
     has_lora = any("lora_A_retain" in k for k in state_dict)
     has_mlp_adapter = any("gate_retain.weight" in k for k in state_dict)
+    is_composite = bool(saved_config) and saved_config.get("adapter_type") == "composite"
+
+    if is_composite:
+        # Composite plans are rebuilt verbatim from the saved plan (sizes and
+        # layer sets per role); no auto-detection or preset overrides.
+        from gradient_routing import apply_adapter_plan
+        model = AutoModelForCausalLM.from_pretrained(base_model)
+        model.generation_config.eos_token_id = _eos_token_id
+        apply_adapter_plan(model, saved_config["plan"],
+                           loreft_init=saved_config.get("loreft_init", "identity"))
+        adapter_keys = {k for k, p in model.named_parameters() if p.requires_grad}
+        state_dict = {(k[len("_orig_mod."):] if k.startswith("_orig_mod.") else k): v
+                      for k, v in state_dict.items()}
+        not_saved = sorted(adapter_keys - set(state_dict))
+        assert not not_saved, (
+            f"checkpoint {model_path} lacks {len(not_saved)} composite adapter params, "
+            f"first 3: {not_saved[:3]}")
+        model.load_state_dict(state_dict, strict=False)
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        model.to(device)
+        model.eval()
+        return model
 
     if not has_lora and not has_mlp_adapter:
         # Plain model checkpoint

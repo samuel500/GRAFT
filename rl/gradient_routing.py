@@ -1,11 +1,14 @@
 """Dual adapter implementation for gradient routing.
 
-Provides two adapter types:
+Provides three adapter types:
   - DualLoRALinear: two LoRA adapters per linear layer (low-rank updates on projections)
   - DualMLPAdapter: two mini-SwiGLU networks per MLP block (extra neurons in intermediate dim)
+  - DualLoReFT: two LoReFT interventions per decoder layer (low-rank edits of the residual stream)
 
-Both share the same interface (get_retain_params/get_forget_params, retain_scale/forget_scale)
-and work with the same gradient routing framework.
+All share the same interface (get_retain_params/get_forget_params, retain_scale/forget_scale)
+and work with the same gradient routing framework. Any side may be absent (size 0), so a
+composite adapter plan (build_adapter_plan) can give retain and forget different types and
+different layer sets.
 
 Naming convention:
   - "retain": adapter we keep at inference (gradients zeroed on bad samples)
@@ -338,6 +341,14 @@ class DualMLPAdapter(nn.Module):
             out = out + self.steer_alpha * self.steer.to(out.dtype)
         return out
 
+    WIRE_KEYS = ["gate_retain", "up_retain", "down_retain",
+                 "gate_forget", "up_forget", "down_forget"]
+
+    def export_weights(self):
+        """{wire key: tensor} for the vLLM weight sync (present sides only)."""
+        return {k: getattr(self, k).weight.data for k in self.WIRE_KEYS
+                if getattr(self, k) is not None}
+
     def get_retain_params(self):
         """Get retain adapter parameters."""
         if self.gate_retain is not None:
@@ -366,7 +377,162 @@ class DualMLPAdapter(nn.Module):
         return out
 
 
-ALL_PROJECTIONS = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+def _orthonormal_rows(w):
+    """Orthonormalize the rows of w (rank, hidden) in fp32 via QR, sign-fixed
+    (diag(R) > 0) so the map is continuous and rows that are already
+    orthonormal map to themselves."""
+    if w.shape[0] == 1:                      # rank 1: QR is a normalization
+        w = w.float()
+        return w / w.norm()
+    q, r = torch.linalg.qr(w.float().t())   # q: (hidden, rank)
+    d = torch.sign(torch.diagonal(r))
+    d = torch.where(d == 0, torch.ones_like(d), d)
+    return (q * d).t()
+
+
+class DualLoReFT(nn.Module):
+    """Two parallel LoReFT interventions (Wu et al. 2024, "ReFT") on one decoder
+    layer's output hidden state h — the residual stream after the block.
+
+    LoReFT edits h inside an r-dim subspace:
+        Φ(h) = h + Rᵀ(W h + b − R h),   R ∈ R^{r×d} with orthonormal rows.
+    Retain and forget each have their own (R, W, b) and both read the same h:
+        out = h + retain_scale·Δ_R(h) + forget_scale·Δ_F(h)
+    so ablating forget leaves exactly the retain-only intervention.
+
+    Deliberate differences from pyreft's LoreftIntervention:
+      - every token position is intervened on (pyreft: a few prompt
+        positions), since rollouts generate through the adapters;
+      - R is the QR-orthonormalization of a free parameter (pyreft: torch's
+        orthogonal parametrization, whose trivialization base is a buffer that
+        the trainable-params-only checkpoint would drop);
+      - init="identity" (default) sets W = R, b = 0 so Φ starts as the
+        identity, like the other adapters' zero init; init="pyreft" keeps
+        nn.Linear's default W, b (Φ ≠ id at step 0).
+
+    Params are fp32 (QR has no bf16 kernel). The forward computes in the
+    activation dtype through the merged form Δ(h) = (h·Aᵀ + b)·R, A = W − R —
+    the same ops the vLLM engine (VLLMDualLoReFT) runs on the synced (A, R, b).
+    Installed by apply_dual_loreft as `layer.loreft` plus a forward hook on the
+    decoder layer, so hooks on this module see h as its input.
+    """
+
+    WIRE_KEYS = ["proj_retain", "rot_retain", "bias_retain",
+                 "proj_forget", "rot_forget", "bias_forget"]
+
+    def __init__(self, hidden_size, retain_rank, forget_rank, init="identity",
+                 device=None, retain_scale=1.0, forget_scale=1.0):
+        super().__init__()
+        assert init in ("identity", "pyreft"), f"unknown LoReFT init {init!r}"
+        self.retain_rank = retain_rank
+        self.forget_rank = forget_rank
+        self.retain_scale = retain_scale
+        self.forget_scale = forget_scale
+        for role, rank in (("retain", retain_rank), ("forget", forget_rank)):
+            if rank > 0:
+                rot = torch.empty(rank, hidden_size, dtype=torch.float32, device=device)
+                nn.init.orthogonal_(rot)
+                proj = nn.Linear(hidden_size, rank, bias=True, dtype=torch.float32, device=device)
+                if init == "identity":
+                    # W = the forward's own R (not rot: QR moves it by ~1e-7),
+                    # so A = W − R is exactly zero.
+                    with torch.no_grad():
+                        proj.weight.copy_(_orthonormal_rows(rot))
+                        proj.bias.zero_()
+                setattr(self, f"rot_{role}", nn.Parameter(rot))
+                setattr(self, f"proj_{role}", proj)
+            else:
+                self.register_parameter(f"rot_{role}", None)
+                setattr(self, f"proj_{role}", None)
+
+    def _apply(self, fn, recurse=True):
+        # Whole-model dtype casts (posthoc evals run model.to(bfloat16)) must
+        # not round the fp32 params: A = W − R is a small difference of nearly
+        # equal matrices, which bf16 storage of W and R would swamp. Device
+        # moves still apply.
+        def device_only(t):
+            moved = fn(t)
+            return moved if moved.dtype == t.dtype else t.to(moved.device)
+        return super()._apply(device_only, recurse)
+
+    def merged(self, role, dtype):
+        """(A, R, b) = (W − R, R, b) cast to `dtype`; A is formed in fp32."""
+        R = _orthonormal_rows(getattr(self, f"rot_{role}"))
+        proj = getattr(self, f"proj_{role}")
+        A = proj.weight.float() - R
+        return A.to(dtype), R.to(dtype), proj.bias.to(dtype)
+
+    @staticmethod
+    def _core(h, mats):
+        A, R, b = mats
+        return (h @ A.t() + b) @ R
+
+    def forward(self, h):
+        fused = _FUSED_ROUTING["active"]
+
+        if not fused:
+            out = h
+            if self.retain_rank > 0:
+                out = out + self._core(h, self.merged("retain", h.dtype)) * self.retain_scale
+            if self.forget_rank > 0:
+                out = out + self._core(h, self.merged("forget", h.dtype)) * self.forget_scale
+            return out
+
+        # Fused routing: per-token parameter-gradient gating (forward value and
+        # input gradient unchanged) + per-token forward forget-scale.
+        hd = h.detach()
+        out = h
+        if self.retain_rank > 0:
+            mats = self.merged("retain", h.dtype)
+            out = out + _fused_decouple(
+                self._core(h, mats), self._core(hd, mats),
+                _FUSED_ROUTING["retain_grad_mask"]) * self.retain_scale
+        if self.forget_rank > 0:
+            mats = self.merged("forget", h.dtype)
+            out = out + _fused_decouple(
+                self._core(h, mats), self._core(hd, mats),
+                _FUSED_ROUTING["forget_grad_mask"]) \
+                * _FUSED_ROUTING["forget_fwd_scale"].to(h.dtype)
+        return out
+
+    def export_weights(self):
+        """{wire key: tensor} for the vLLM weight sync: the merged (A, R, b) in
+        fp32 (the client casts to the engine dtype), present sides only."""
+        out = {}
+        with torch.no_grad():
+            for role, rank in (("retain", self.retain_rank), ("forget", self.forget_rank)):
+                if rank > 0:
+                    A, R, b = self.merged(role, torch.float32)
+                    out[f"proj_{role}"], out[f"rot_{role}"], out[f"bias_{role}"] = A, R, b
+        return out
+
+    def _role_params(self, role):
+        if getattr(self, f"rot_{role}") is None:
+            return []
+        proj = getattr(self, f"proj_{role}")
+        return [getattr(self, f"rot_{role}"), proj.weight, proj.bias]
+
+    def get_retain_params(self):
+        """Get retain adapter parameters."""
+        return self._role_params("retain")
+
+    def get_forget_params(self):
+        """Get forget adapter parameters."""
+        return self._role_params("forget")
+
+    def natural_adapter_output(self, x, forget_fwd_scale):
+        """The adapter contribution (Δ_R·retain_scale + Δ_F·forget_fwd_scale)
+        with NO routing decouple; see DualMLPAdapter.natural_adapter_output."""
+        out = None
+        if self.retain_rank > 0:
+            out = self._core(x, self.merged("retain", x.dtype)) * self.retain_scale
+        if self.forget_rank > 0:
+            f = self._core(x, self.merged("forget", x.dtype)) * forget_fwd_scale
+            out = f if out is None else out + f
+        return out
+
+
+ALL_PROJECTIONS =["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 ATTENTION_PROJECTIONS = ["q_proj", "k_proj", "v_proj", "o_proj"]
 MLP_PROJECTIONS = ["gate_proj", "up_proj", "down_proj"]
 
@@ -564,7 +730,179 @@ def apply_dual_mlp(model, retain_neurons, forget_neurons,
     return modified
 
 
-_DUAL_ADAPTER_TYPES = (DualLoRALinear, DualMLPAdapter)
+def _loreft_output_hook(layer, args, output):
+    """Decoder-layer forward hook: apply layer.loreft to the block output."""
+    if isinstance(output, tuple):
+        return (layer.loreft(output[0]),) + tuple(output[1:])
+    return layer.loreft(output)
+
+
+def apply_dual_loreft(model, layer_ranks, init="identity", freeze_base=True):
+    """Attach DualLoReFT interventions to decoder-layer outputs.
+
+    layer_ranks: {layer_idx: (retain_rank, forget_rank)}; layers not listed
+    (or with both ranks 0) get no intervention. Each adapted decoder layer gets
+    a `loreft` submodule plus a forward hook that rewrites its output, so the
+    layer class (and HF gradient checkpointing around it) is untouched.
+    Returns the sorted list of modified layer indices.
+    """
+    if freeze_base:
+        for param in model.parameters():
+            param.requires_grad = False
+
+    hidden_size = model.config.hidden_size
+    device = next(model.parameters()).device
+    layers = {layer_idx: parent for layer_idx, _, parent, _ in find_mlp_modules(model)}
+    unknown = set(layer_ranks) - set(layers)
+    assert not unknown, f"apply_dual_loreft: no decoder layers {sorted(unknown)}"
+
+    modified = []
+    for layer_idx in sorted(layer_ranks):
+        retain_rank, forget_rank = layer_ranks[layer_idx]
+        if retain_rank == 0 and forget_rank == 0:
+            continue
+        layer = layers[layer_idx]
+        assert not hasattr(layer, "loreft"), f"layer {layer_idx} already has a LoReFT"
+        layer.loreft = DualLoReFT(hidden_size, retain_rank, forget_rank, init=init, device=device)
+        layer.register_forward_hook(_loreft_output_hook)
+        modified.append(layer_idx)
+    return modified
+
+
+# ---------------------------------------------------------------------------
+# Composite adapter plans: retain and forget may use different adapter types
+# and different layer sets. The plan is the single source of truth shared by
+# the trainer (apply_adapter_plan), the vLLM engine (create_engine), and the
+# checkpoint loader (saved in dual_lora_config.json).
+# ---------------------------------------------------------------------------
+
+# Canonical per-layer module order; the weight-sync wire order is plan order.
+ADAPTER_KINDS = ("mlp", "loreft")
+
+
+def parse_adapter_spec(spec):
+    """'mlp:64' -> ('mlp', 64), 'loreft:8' -> ('loreft', 8), 'none' -> ('none', 0)."""
+    if spec in (None, "none"):
+        return "none", 0
+    kind, sep, size = spec.partition(":")
+    assert sep and kind in ADAPTER_KINDS and size.isdigit() and int(size) > 0, (
+        f"bad adapter spec {spec!r}; expected 'none' or '<kind>:<size>' with kind in "
+        f"{ADAPTER_KINDS} (mlp size = neurons, loreft size = rank)")
+    return kind, int(size)
+
+
+def parse_layer_spec(spec, num_layers):
+    """Concrete layer indices from a spec string.
+
+    None / 'all' -> every layer. Otherwise comma-separated items, each 'i',
+    'a-b' (inclusive) or 'a-b:s' (inclusive, stride s), e.g. '0-17', '0-35:2',
+    '4,8,12-15'. Negative indices are not supported.
+    """
+    if spec in (None, "all"):
+        return list(range(num_layers))
+    out = set()
+    for item in str(spec).split(","):
+        rng, _, stride = item.strip().partition(":")
+        lo, dash, hi = rng.partition("-")
+        lo = int(lo)
+        hi = int(hi) if dash else lo
+        out.update(range(lo, hi + 1, int(stride) if stride else 1))
+    bad = sorted(i for i in out if not 0 <= i < num_layers)
+    assert not bad, f"layer spec {spec!r}: indices {bad} out of range [0, {num_layers})"
+    return sorted(out)
+
+
+def build_adapter_plan(num_layers, retain_adapter, forget_adapter,
+                       retain_layers=None, forget_layers=None):
+    """Per-(layer, kind) retain/forget sizes for a composite adapter.
+
+    retain_adapter / forget_adapter: specs for parse_adapter_spec.
+    retain_layers / forget_layers: specs for parse_layer_spec (default all).
+    Returns a list of {"kind", "layer", "retain", "forget"} sorted by (layer,
+    ADAPTER_KINDS order), one entry per module to install. Sizes are neurons
+    for mlp and rank for loreft; 0 means that side is absent on that module.
+    """
+    entries = {}
+    for role, spec, layer_spec in (("retain", retain_adapter, retain_layers),
+                                   ("forget", forget_adapter, forget_layers)):
+        kind, size = parse_adapter_spec(spec)
+        if kind == "none":
+            continue
+        for layer in parse_layer_spec(layer_spec, num_layers):
+            e = entries.setdefault((layer, kind), {"kind": kind, "layer": layer,
+                                                    "retain": 0, "forget": 0})
+            e[role] = size
+    assert entries, "adapter plan is empty (both retain and forget are 'none')"
+    return [entries[k] for k in sorted(entries, key=lambda k: (k[0], ADAPTER_KINDS.index(k[1])))]
+
+
+def apply_adapter_plan(model, plan, loreft_init="identity"):
+    """Install a composite adapter plan (see build_adapter_plan). Freezes the
+    base model; only adapter params are trainable. Returns the plan."""
+    for param in model.parameters():
+        param.requires_grad = False
+
+    hidden_size = model.config.hidden_size
+    mlp_sizes = {e["layer"]: (e["retain"], e["forget"]) for e in plan if e["kind"] == "mlp"}
+    loreft_ranks = {e["layer"]: (e["retain"], e["forget"]) for e in plan if e["kind"] == "loreft"}
+    if mlp_sizes:
+        for layer_idx, _, parent, base_mlp in find_mlp_modules(model, sorted(mlp_sizes)):
+            retain_neurons, forget_neurons = mlp_sizes[layer_idx]
+            adapter = DualMLPAdapter(base_mlp, hidden_size, retain_neurons, forget_neurons)
+            adapter._pps_layer_idx = layer_idx
+            setattr(parent, "mlp", adapter)
+    if loreft_ranks:
+        apply_dual_loreft(model, loreft_ranks, init=loreft_init, freeze_base=False)
+    return plan
+
+
+_DUAL_ADAPTER_TYPES = (DualLoRALinear, DualMLPAdapter, DualLoReFT)
+_SYNC_KIND = {DualMLPAdapter: "mlp", DualLoReFT: "loreft"}
+
+
+def adapter_modules_for_sync(model):
+    """[(kind, layer_idx, module)] for every DualMLPAdapter / DualLoReFT in
+    weight-sync order: by layer, then ADAPTER_KINDS order. For an MLP-only
+    model this is model.modules() order (the legacy wire order)."""
+    layer_of = _build_layer_index_map(model)
+    mods = [(_SYNC_KIND[type(m)], layer_of[id(m)], m) for m in model.modules()
+            if type(m) in _SYNC_KIND]
+    return sorted(mods, key=lambda t: (t[1], ADAPTER_KINDS.index(t[0])))
+
+
+def adapter_plan_role_params(model):
+    """{"retain": n, "forget": n} trainable adapter parameter counts."""
+    n = {"retain": 0, "forget": 0}
+    for m in model.modules():
+        if isinstance(m, _DUAL_ADAPTER_TYPES):
+            n["retain"] += sum(p.numel() for p in m.get_retain_params())
+            n["forget"] += sum(p.numel() for p in m.get_forget_params())
+    return n
+
+
+def adapter_plan_kappas(adapter_config):
+    """(κ_R, κ_F) for balanced renormalization under a composite plan.
+
+    An explicit adapter_kappa override ("κ_R,κ_F") wins. Otherwise both roles
+    must use the same adapter kind, and κ comes from trainable parameter counts
+    (for a single kind these are proportional to neurons / rank, so this is the
+    MLP neuron-count formula). Mixed kinds have no size proxy for output-space
+    pressure, so they must pass the override.
+    """
+    from advantages import adapter_kappas
+    override = adapter_config.get("adapter_kappa")
+    if override:
+        k_r, k_f = (float(x) for x in str(override).split(","))
+        return k_r, k_f
+    kind_r, _ = parse_adapter_spec(adapter_config["retain_adapter"])
+    kind_f, _ = parse_adapter_spec(adapter_config["forget_adapter"])
+    if kind_r != kind_f:
+        raise NotImplementedError(
+            f"balanced renormalization with mixed adapter kinds (retain={kind_r}, "
+            f"forget={kind_f}) has no size-derived κ; pass --adapter_kappa 'κ_R,κ_F' "
+            "(e.g. '2,2' for the paper's doubling).")
+    n = adapter_config["role_params"]
+    return adapter_kappas(n["retain"], n["forget"])
 
 
 def has_dual_adapters(model):
@@ -745,6 +1083,8 @@ class PerSampleGradCapture:
     """
 
     def __init__(self, model):
+        assert not any(isinstance(m, DualLoReFT) for m in model.modules()), (
+            "PerSampleGradCapture does not support DualLoReFT adapters yet")
         self._handles = []
         self._saved_inputs = {}   # id(module) -> input activation x (batch-squeezed later)
         self._spans = None        # list of (start, end, sample_id)
@@ -999,7 +1339,7 @@ class PreRoutingGradAccumulator:
 
     def _install(self, model):
         for m in model.modules():
-            if isinstance(m, (DualLoRALinear, DualMLPAdapter)):
+            if isinstance(m, _DUAL_ADAPTER_TYPES):
                 if isinstance(m, DualLoRALinear):
                     assert _dropout_is_off(m.dropout), (
                         "split-moment pre-routing grad capture requires adapter "

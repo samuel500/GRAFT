@@ -25,7 +25,7 @@ import numpy as np
 import torch
 import zmq
 
-from gradient_routing import DualMLPAdapter
+from gradient_routing import DualLoReFT, DualMLPAdapter, adapter_modules_for_sync
 from vllm_utils import WEIGHT_KEYS
 
 
@@ -33,31 +33,31 @@ _PINNED_CACHE = {}
 
 
 def _pack_weights_flat(model):
-    """Pack all DualMLPAdapter weights into ONE flat bf16 buffer.
+    """Pack all DualMLPAdapter / DualLoReFT weights into ONE flat bf16 buffer.
 
     Replaces the per-tensor extraction (180 small .cpu() calls, each a
     blocking CUDA sync) with: device-side casts into a flat staging tensor
     (async) + a single D2H copy into a cached pinned buffer. bf16 on the wire
     because the engine stores bf16 anyway — the cast just moves earlier.
 
-    Order contract: model.modules() DualMLPAdapter order (== adapted-layer
-    order, the same assumption the per-layer dict protocol made), WEIGHT_KEYS
-    within each layer. The server unflattens with the same contract.
+    Order contract: adapter_modules_for_sync order (by layer, then mlp before
+    loreft; for an MLP-only model this is model.modules() order, the legacy
+    contract), each module's WIRE_KEYS within it. The server unflattens with
+    the same contract.
 
-    Returns (payload_bytes, shapes) — shapes is a per-layer list of
-    {key: shape} for the keys present.
+    Returns (payload_bytes, shapes, modules) — shapes is a per-module list of
+    {key: shape} for the keys present, modules the matching [kind, layer]
+    list (checked by composite servers, ignored by legacy ones).
     """
-    srcs, shapes = [], []
-    for module in model.modules():
-        if isinstance(module, DualMLPAdapter):
-            layer_shapes = {}
-            for key in WEIGHT_KEYS:
-                attr = getattr(module, key, None)
-                if attr is not None:
-                    srcs.append(attr.weight.data)
-                    layer_shapes[key] = list(attr.weight.shape)
-            shapes.append(layer_shapes)
-    assert srcs, "No DualMLPAdapter layers found in model"
+    srcs, shapes, modules = [], [], []
+    for kind, layer_idx, module in adapter_modules_for_sync(model):
+        module_shapes = {}
+        for key, t in module.export_weights().items():
+            srcs.append(t)
+            module_shapes[key] = list(t.shape)
+        shapes.append(module_shapes)
+        modules.append([kind, layer_idx])
+    assert srcs, "No DualMLPAdapter / DualLoReFT layers found in model"
     total = sum(t.numel() for t in srcs)
     device = srcs[0].device
     staging = torch.empty(total, dtype=torch.bfloat16, device=device)
@@ -73,7 +73,7 @@ def _pack_weights_flat(model):
                              pin_memory=(device.type == "cuda"))
         _PINNED_CACHE[cache_key] = pinned
     pinned.copy_(staging)                            # the ONE D2H (syncs)
-    return pinned.view(torch.uint8).numpy().tobytes(), shapes
+    return pinned.view(torch.uint8).numpy().tobytes(), shapes, modules
 
 
 def _pack_steering_msg(experiment_id, layer_to_vec, alpha):
@@ -111,6 +111,9 @@ def _pack_steering_msg(experiment_id, layer_to_vec, alpha):
 
 def _extract_weights_from_model(model):
     """Extract DualMLPAdapter weights from HF model, return (layers, shapes)."""
+    assert not any(isinstance(m, DualLoReFT) for m in model.modules()), (
+        "the legacy per-tensor weight protocol is MLP-only; LoReFT needs the "
+        "sync client's flat path")
     layers = []
     shapes = {}
     for module in model.modules():
@@ -158,14 +161,15 @@ class VLLMClient:
         self._request({"op": "release", "experiment_id": experiment_id})
 
     def update_weights_from_model(self, experiment_id, model):
-        """Send all DualMLPAdapter weights as one flat bf16 buffer (fast sync)."""
-        flat, shapes = _pack_weights_flat(model)
+        """Send all adapter weights as one flat bf16 buffer (fast sync)."""
+        flat, shapes, modules = _pack_weights_flat(model)
         self._request({
             "op": "update_weights",
             "experiment_id": experiment_id,
             "flat": flat,
             "dtype": "bfloat16",
             "flat_shapes": shapes,
+            "flat_modules": modules,
         })
 
     def generate(self, experiment_id, prompt_ids, n, temperature, max_tokens,

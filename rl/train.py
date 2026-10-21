@@ -76,8 +76,10 @@ def _spawn_vllm_server(model_name, mlp_config, gpu_memory, socket_path, ready_fi
                        max_experiments=4, gpu_id=0, label=None, log_dir=None, enforce_eager=True,
                        max_num_seqs=None, async_scheduling=False, cudagraph_mode=None,
                        max_model_len=None, kv_cache_memory_bytes=None,
-                       parallel_init=False):
+                       parallel_init=False, adapter_plan=None):
     """Worker for per-run vLLM server subprocess (must be module-level for spawn pickling).
+
+    adapter_plan (composite adapters) replaces mlp_config and the layer range.
 
     Concurrent-init serialization is internal: vllm_init_slot acquires an
     exclusive flock for the duration of VLLMServer construction (the
@@ -113,7 +115,8 @@ def _spawn_vllm_server(model_name, mlp_config, gpu_memory, socket_path, ready_fi
     from vllm_utils import MLP_PRESETS
     from vllm_server import VLLMServer
 
-    preset = MLP_PRESETS[mlp_config]
+    preset = (MLP_PRESETS[mlp_config] if adapter_plan is None
+              else {"retain_neurons": 0, "forget_neurons": 0})
     init_label = label or f"vllm_train_pid{os.getpid()}"
     # Hold the per-GPU lock for the CUDA-init phase only. Release before
     # entering the unbounded serve loop. CUDA_VISIBLE_DEVICES is set by the
@@ -147,6 +150,7 @@ def _spawn_vllm_server(model_name, mlp_config, gpu_memory, socket_path, ready_fi
             forget_neurons=preset["forget_neurons"],
             model_name=model_name,
             gpu_memory_utilization=gpu_memory,
+            adapter_plan=adapter_plan,
             layer_start=layer_start,
             layer_end=layer_end,
             layer_stride=layer_stride,
@@ -721,14 +725,26 @@ class SampleGRPOTrainer(GRPOTrainer):
                     f"and forget_rank>0); got r_R={n_R}, r_F={n_F}.")
                 print(f"[graft-port] RELAXATION: approximate κ from LoRA ranks "
                       f"(r_R={n_R}, r_F={n_F}); equal-pressure is approximate for LoRA.")
-            else:
+            elif self._adapter_type != "composite":
                 n_R = (adapter_config or {}).get("retain_neurons", 0)
                 n_F = (adapter_config or {}).get("forget_neurons", 0)
                 assert n_R > 0 and n_F > 0, (
                     "graft-port routing requires both adapters present (retain_neurons>0 and "
                     f"forget_neurons>0); got n_R={n_R}, n_F={n_F} (retain_source='base' / forget-only "
                     "is not a routing config).")
-            self._kappa_r, self._kappa_f = adapter_kappas(n_R, n_F)
+            if self._adapter_type == "composite":
+                from gradient_routing import adapter_plan_kappas
+                n = adapter_config["role_params"]
+                assert n["retain"] > 0 and n["forget"] > 0, (
+                    "graft-port routing requires both adapters present; got "
+                    f"role_params={n}.")
+                self._kappa_r, self._kappa_f = adapter_plan_kappas(adapter_config)
+                print(f"[graft-port] composite κ: κ_R={self._kappa_r:.3f}, κ_F={self._kappa_f:.3f} "
+                      f"(retain={adapter_config['retain_adapter']}, "
+                      f"forget={adapter_config['forget_adapter']}, "
+                      f"override={adapter_config.get('adapter_kappa')})")
+            else:
+                self._kappa_r, self._kappa_f = adapter_kappas(n_R, n_F)
             # Per-coordinate Adam step ≈ κ at λ=1 (κ enters m, not v); fail loud if the
             # geometry would exceed graft_w_max rather than silently clamp.
             assert_kappa_geometry(routing_mode, routing_lambda,
@@ -5225,8 +5241,24 @@ def _make_parser():
                              "adapter construction); the adapter becomes forget-only (retain_neurons "
                              "forced to 0). Requires adapter_type in {mlp,none} and vllm_colocate.")
     # Adapter type selection
-    parser.add_argument("--adapter_type", choices=["lora", "mlp", "none"], default="lora",
-                        help="Adapter type for gradient routing (default: lora). 'none' = full-param training, no adapters.")
+    parser.add_argument("--adapter_type", choices=["lora", "mlp", "composite", "none"], default="lora",
+                        help="Adapter type for gradient routing (default: lora). 'none' = full-param training, no adapters. "
+                             "'composite' = per-role adapter type and layers from --retain_adapter/--forget_adapter "
+                             "and --retain_layers/--forget_layers.")
+    parser.add_argument("--retain_adapter", default=None,
+                        help="composite: retain adapter spec, 'mlp:<neurons>', 'loreft:<rank>' or 'none'")
+    parser.add_argument("--forget_adapter", default=None,
+                        help="composite: forget adapter spec, 'mlp:<neurons>', 'loreft:<rank>' or 'none'")
+    parser.add_argument("--retain_layers", default=None,
+                        help="composite: retain layers, 'all' (default) or e.g. '0-17', '0-35:2', '4,8,12-15'")
+    parser.add_argument("--forget_layers", default=None,
+                        help="composite: forget layers (same syntax as --retain_layers)")
+    parser.add_argument("--loreft_init", choices=["identity", "pyreft"], default="identity",
+                        help="composite: LoReFT init. 'identity' = W=R, b=0 (no effect at step 0); "
+                             "'pyreft' = nn.Linear default W, b as in pyreft")
+    parser.add_argument("--adapter_kappa", default=None,
+                        help="composite: balanced-renorm κ override 'κ_R,κ_F' (required when retain and "
+                             "forget use different adapter kinds)")
     parser.add_argument("--mlp_config", default=None, choices=list(MLP_PRESETS.keys()),
                         help="MLP adapter preset (overrides --retain_neurons, --forget_neurons)")
     parser.add_argument("--retain_neurons", type=int, default=32)
@@ -5804,6 +5836,16 @@ def _apply_presets(args):
         raise ValueError("--mlp_config cannot be used with --adapter_type lora")
     if args.disjoint_lora_init and args.adapter_type != "lora":
         raise ValueError("--disjoint_lora_init requires --adapter_type lora")
+    composite_flags = [k for k in ("retain_adapter", "forget_adapter", "retain_layers",
+                                   "forget_layers", "adapter_kappa") if getattr(args, k) is not None]
+    if args.adapter_type == "composite":
+        if args.lora_config or args.mlp_config:
+            raise ValueError("--lora_config / --mlp_config cannot be used with --adapter_type "
+                             "composite (set mlp_config=None when deriving from an MLP sweep)")
+        if args.retain_adapter is None or args.forget_adapter is None:
+            raise ValueError("--adapter_type composite requires --retain_adapter and --forget_adapter")
+    elif composite_flags:
+        raise ValueError(f"{composite_flags} require --adapter_type composite")
     if args.lora_config:
         preset = LORA_PRESETS[args.lora_config]
         args.retain_rank = preset["retain_rank"]
@@ -5967,6 +6009,16 @@ def _run(args, exp_cfg=None):
         assert args.routing_mode == "none", \
             "adapter_type='none' requires routing_mode='none' (no adapters to route)"
         print("No adapters: full-parameter training")
+    elif args.adapter_type == "composite":
+        from gradient_routing import build_adapter_plan, apply_adapter_plan
+        adapter_plan = build_adapter_plan(
+            model.config.num_hidden_layers, args.retain_adapter, args.forget_adapter,
+            args.retain_layers, args.forget_layers)
+        apply_adapter_plan(model, adapter_plan, loreft_init=args.loreft_init)
+        print(f"Composite adapters: retain={args.retain_adapter} on layers "
+              f"{args.retain_layers or 'all'}, forget={args.forget_adapter} on layers "
+              f"{args.forget_layers or 'all'} ({len(adapter_plan)} modules, "
+              f"loreft_init={args.loreft_init})")
     elif args.adapter_type == "mlp":
         from gradient_routing import apply_dual_mlp
         # retain_source='base' repurposes the adapter as forget-only and makes
@@ -6063,6 +6115,19 @@ def _run(args, exp_cfg=None):
             "layer_stride": args.layer_stride,
             "layer_start": args.layer_start,
             "layer_end": args.layer_end,
+        }
+    elif args.adapter_type == "composite":
+        from gradient_routing import adapter_plan_role_params
+        adapter_config = {
+            "adapter_type": "composite",
+            "retain_adapter": args.retain_adapter,
+            "forget_adapter": args.forget_adapter,
+            "retain_layers": args.retain_layers,
+            "forget_layers": args.forget_layers,
+            "loreft_init": args.loreft_init,
+            "adapter_kappa": args.adapter_kappa,
+            "role_params": adapter_plan_role_params(model),
+            "plan": adapter_plan,
         }
     else:
         adapter_config = {
@@ -6712,7 +6777,9 @@ def _run(args, exp_cfg=None):
                     "cudagraph_mode": args.vllm_cudagraph_mode or None,
                     "max_model_len": args.vllm_max_model_len,
                     "kv_cache_memory_bytes": _vllm_kv_bytes,
-                    "parallel_init": _vllm_parallel_init},
+                    "parallel_init": _vllm_parallel_init,
+                    "adapter_plan": (adapter_config["plan"]
+                                     if args.adapter_type == "composite" else None)},
             # daemon=False so vLLM v1 engine can spawn its own CoreEngineProcManager children
         )
         _vllm_server_proc.start()

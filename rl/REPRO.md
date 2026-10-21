@@ -28,7 +28,7 @@ uv run --no-project --with matplotlib --with numpy --with scipy python tools/rep
 # Fig 2 arms vs the paper's released numbers, per seed
 python tools/repro_compare.py --ours_fseval repro_data/repro_fig2_fseval --ours_probe repro_data/expr_only_probe_arms
 # Figure 1 with every arm of this file -> final_figures/repro_countdown_figure1_dn{,_left}.{png,pdf}
-# (_left = the scatter panel on its own)
+# (_left = the scatter panel on its own; also _left_no_lr5e-4, without the lr-5e-4 GRAFT / GRAFT w/o routing arms)
 bash figures/build_dn_figroot.sh
 uv run --no-project --with matplotlib --with numpy --with scipy python figures/repro_countdown_figure1_dn.py
 # refresh repro_data/ from the network volume (only needed if runs change)

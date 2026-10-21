@@ -51,6 +51,7 @@ OUT = os.environ.get("GRAFT_OUTPUT_ROOT", os.path.join(ROOT, "paper_data", "outp
 GR_SEEDS = (1, 2, 3, 4, 5, 9, 15, 16)
 if os.environ.get("GRAFT_GR_SEEDS"):  # e.g. a replication with a subset of seeds
     GR_SEEDS = tuple(int(x) for x in os.environ["GRAFT_GR_SEEDS"].split(","))
+FIG_NAME = os.environ.get("GRAFT_FIG_NAME", "countdown_figure1")  # output basename
 
 
 def _gr_sweep(seed):
@@ -386,7 +387,7 @@ def main():
     for d in (os.path.join(HERE, "figs"), os.path.join(ROOT, "final_figures")):
         os.makedirs(d, exist_ok=True)
         for ext in ("pdf", "png"):
-            out = os.path.join(d, f"countdown_figure1.{ext}")
+            out = os.path.join(d, f"{FIG_NAME}.{ext}")
             fig.savefig(out, bbox_inches="tight", pad_inches=0.04,
                         **({"dpi": 150} if ext == "png" else {}))
             print(f"wrote {out}")

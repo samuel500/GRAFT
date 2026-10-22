@@ -15,8 +15,15 @@ compute used, and caveats.
 | per-run eval data (28 runs: configs, per-step routing evals, n=256 fsevals, expr-only probes) | [`repro_data/`](repro_data/) |
 | run index: arm, class, sweep, seed, lr, anchor, routing, adapter, deploy scale, code commit, HF path | [`repro_data/runs.csv`](repro_data/runs.csv) |
 | sha256 of every file in `repro_data/` and of each run's `checkpoint-200/model.safetensors` | [`repro_data/MANIFEST.txt`](repro_data/MANIFEST.txt) |
-| adapters (checkpoint-200 of every run) | HF [`samuel500/graft-repro-adapters`](https://huggingface.co/samuel500/graft-repro-adapters) (private), `<class>/<run_name>/` |
-| SFT base model (frozen during RL) | HF [`samuel500/graft-qwen3-8b-countdown-sft`](https://huggingface.co/samuel500/graft-qwen3-8b-countdown-sft) (private), revision `a2d54fdf` |
+| adapters (checkpoint-200 of every run) | HF [`samuel500/graft-repro-adapters`](https://huggingface.co/samuel500/graft-repro-adapters), `<class>/<run_name>/` |
+| SFT base model (frozen during RL) | HF [`samuel500/graft-qwen3-8b-countdown-sft`](https://huggingface.co/samuel500/graft-qwen3-8b-countdown-sft), revision `a2d54fdf` |
+
+`repro_data/` was copied from each run's `rl/output/` after the runs finished:
+`<sweep>/<run>/{run_config.yaml,routing_eval.jsonl}`, `<sweep>_fseval/<run>.json` and
+`expr_only_probe_arms/<run>.json`, plus the base-model evals (`__r0.0`). Checkpoints, optimizer
+state and per-sample outputs are not included. `cd repro_data && sha256sum -c --ignore-missing
+MANIFEST.txt` checks the tracked files. The manifest's checkpoint lines match the
+`model.safetensors` files on HF.
 
 All commands below run from `rl/`. The tables and the figure build offline from tracked files
 only. The plotting/summary commands use `uv run --no-project` so the laptop does not sync the
@@ -32,8 +39,6 @@ python tools/repro_compare.py --ours_fseval repro_data/repro_fig2_fseval --ours_
 # the PNGs are also copied to repro_figures/ (tracked, embedded below)
 bash figures/build_dn_figroot.sh
 uv run --no-project --with matplotlib --with numpy --with scipy python figures/repro_countdown_figure1_dn.py
-# refresh repro_data/ from the network volume (only needed if runs change)
-bash repro_data/fetch.sh
 ```
 
 ## Figures
@@ -60,25 +65,26 @@ No intervention + anchor, GRAFT and GRAFT w/o routing at lr 5e-4):
 
 - **Model:** every run trains adapters on the frozen SFT base above for 200 GRPO steps
   (HF cosine schedule, 20 warmup steps). The base model is the merged Qwen3-8B Countdown-Code SFT
-  model made with `scripts/pod/run_sft.sh`. On a pod, `scripts/pod/s3_sync.sh pull_sft` pulls it
-  from the network volume and checks its sha256.
+  model made with `scripts/pod/run_sft.sh`. On a pod, `scripts/pod/sync.sh pull_sft` downloads it
+  from HF at the pinned revision and checks its sha256 (both set in `scripts/pod/env.sh`).
 - **Hardware:** one 1× H200 SXM Runpod pod per seed (secure cloud, US-NC-1 / US-CO-1, image
   `runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404`, $5.29/h). The exception is
   `dn_anchor`, which ran 4 seeds on one pod. Runs use the H200 settings (vLLM GPU memory 0.7,
   no gradient checkpointing). A seed takes about 2.6-4 pod-hours including setup, a 4-step smoke
   test and the evals.
-- **Pod flow:** `bash scripts/pod/setup.sh` (uv venv, vLLM patches, rl-rewardhacking data, awscli),
+- **Pod flow:** `bash scripts/pod/setup.sh` (uv venv, vLLM patches, rl-rewardhacking data),
   then a queue script:
   - `scripts/pod/run_seed_queue.sh <sweep_file> <sweep_name> <run_prefix> <scales> "<seeds>"`
     runs a 4-step smoke test, then for each seed: train, n=256 fseval and expr-only probe (k=1)
-    at `<scales>`, and a push of `output/` to the volume.
+    at `<scales>`. Results stay in `rl/output/` on the pod. `sync.sh push` mirrors them to
+    S3-compatible storage only if `GRAFT_SYNC_URI` is set (see `env.sh`).
   - `run_rl.sh` (Fig 2) and `run_dn_anchor.sh` (`dn_anchor`) are earlier one-off versions of the
     same queue.
-- **Launch pattern** (the orchestration scripts are not in the repo; they hold personal keys and
-  ops-box paths): an ops box creates the pod through the Runpod REST API and copies over a
-  `git bundle` of the branch, a W&B `.netrc` and the volume's S3 keys (`/root/.graft_s3`). It then
-  starts `setup.sh && <queue>` in tmux, polls `logs/<sweep_name>.done`, checks that every seed's
-  results reached the volume, and stops the pod.
+- **Launch pattern** (our orchestration scripts are not in the repo; they are specific to our
+  machines and accounts): a controller machine creates the pod through the Runpod REST API and
+  copies over the code at the run's commit and a W&B `.netrc`. It then starts
+  `setup.sh && <queue>` in tmux, polls `logs/<sweep_name>.done`, checks that every seed's results
+  were synced off the pod, and stops the pod.
 - **Code commits:** listed per run in `runs.csv`. Training code is identical across 16844a3,
   a9f8ee1, bd53a31 and 235718f; later commits only add sweep files, queue scripts and the
   `m128_retain_only` vLLM preset.
@@ -237,13 +243,3 @@ bash scripts/pod/run_seed_queue.sh sweeps/countdown_hf100_noroute_anchor_lr1.py 
 **Caveats:**
 - Four seeds with large seed-to-seed variance. The per-step curve evals are n=64.
 - The paper's GRAFT w/o routing has no expr-only probe at scale 1.0.
-
-## Before going public
-
-Not done yet:
-- `scripts/pod/env.sh` hardcodes the network volume's S3 URI, and `s3_sync.sh pull_sft` needs our
-  S3 keys. Make S3 optional and let pods pull the SFT base from HF.
-- Scrub infra identifiers: the volume id in `env.sh`, `repro_data/fetch.sh` and this file's
-  history, and ops-box host names.
-- Both HF repos are private. Their `meta.json` files point `code_repo` at the private staging repo
-  (`samuel500/GRAFT`). Regenerate them with the public fork's URL when publishing.

@@ -2,7 +2,7 @@
 # Anchored no-intervention arm (sweeps/countdown_hf100_dn_anchor.py), all 4 seeds
 # queued on ONE pod: pull SFT model -> 4-step smoke of the forget-less config ->
 # per seed: train 200 steps -> fseval (n=256, scale 1.0) + expr-only probe (k=1)
-# -> push to the network volume. A failed seed is logged and the queue moves on.
+# -> optional results push (sync.sh). A failed seed is logged and the queue moves on.
 # Writes $LOGS/dn_anchor.done (EXIT=0|1 + failed seeds) at the end, also when the
 # smoke fails, so a watcher can stop the pod.
 #   bash scripts/pod/run_dn_anchor.sh
@@ -10,7 +10,7 @@ set -euo pipefail
 source "$(dirname "$0")/env.sh"
 cd "$RL"; source .venv/bin/activate
 trap 'echo "EXIT=1 aborted at line $LINENO" > "$LOGS/dn_anchor.done"' ERR
-[ -f "$GRAFT_COUNTDOWN_SFT_MODEL/config.json" ] || bash "$(dirname "$0")/s3_sync.sh" pull_sft
+[ -f "$GRAFT_COUNTDOWN_SFT_MODEL/config.json" ] || bash "$(dirname "$0")/sync.sh" pull_sft
 SW="--config sweeps/countdown_hf100_dn_anchor.py --no_baseline --no-eval_at_start --overwrite_run"
 
 # Smoke: m128_retain_only + classic routing at recall 0 has not run before.
@@ -37,7 +37,7 @@ run_seed() {  # && chain: set -e does not apply inside a tested function call
 failed=""
 for s in 9 15 16 1; do
   run_seed $s || { failed="$failed $s"; echo "SEED_FAIL $s"; }
-  bash "$(dirname "$0")/s3_sync.sh" push || echo "PUSH_FAIL after seed $s"
+  bash "$(dirname "$0")/sync.sh" push || echo "PUSH_FAIL after seed $s"
 done
 ex=0; [ -n "$failed" ] && ex=1
 echo "EXIT=$ex failed:${failed:- none}" > "$LOGS/dn_anchor.done"

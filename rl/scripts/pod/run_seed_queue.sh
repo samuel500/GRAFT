@@ -1,7 +1,7 @@
 #!/bin/bash
 # All seeds of one Countdown sweep queued on ONE pod (run_dn_anchor.sh, generalized):
 # pull SFT model -> 4-step smoke -> per seed: train 200 steps -> fseval (n=256) +
-# expr-only probe (k=1) at <scale> -> push to the network volume. A failed seed
+# expr-only probe (k=1) at <scale> -> optional results push (sync.sh). A failed seed
 # is logged and the queue moves on. Writes $LOGS/<sweep_name>.done (EXIT=0|1 +
 # failed seeds) at the end, also when the smoke fails, so a watcher can stop the pod.
 #   bash scripts/pod/run_seed_queue.sh <sweep_file> <sweep_name> <run_prefix> <scale> "<seeds>"
@@ -13,7 +13,7 @@ source "$(dirname "$0")/env.sh"
 cd "$RL"; source .venv/bin/activate
 done_f="$LOGS/$name.done"
 trap 'echo "EXIT=1 aborted at line $LINENO" > "$done_f"' ERR
-[ -f "$GRAFT_COUNTDOWN_SFT_MODEL/config.json" ] || bash "$(dirname "$0")/s3_sync.sh" pull_sft
+[ -f "$GRAFT_COUNTDOWN_SFT_MODEL/config.json" ] || bash "$(dirname "$0")/sync.sh" pull_sft
 SW="--config $sweep_file --no_baseline --no-eval_at_start --overwrite_run"
 
 smoke=${prefix}_s${seeds%% *}
@@ -39,7 +39,7 @@ run_seed() {  # && chain: set -e does not apply inside a tested function call
 failed=""
 for s in $seeds; do
   run_seed $s || { failed="$failed $s"; echo "SEED_FAIL $s"; }
-  bash "$(dirname "$0")/s3_sync.sh" push || echo "PUSH_FAIL after seed $s"
+  bash "$(dirname "$0")/sync.sh" push || echo "PUSH_FAIL after seed $s"
 done
 ex=0; [ -n "$failed" ] && ex=1
 echo "EXIT=$ex failed:${failed:- none}" > "$done_f"

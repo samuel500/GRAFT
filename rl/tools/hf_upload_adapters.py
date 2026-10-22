@@ -8,12 +8,12 @@ Face repo, one folder per run: <class>/<run_name>/ with
                                              deploy scale, sha256 of model.safetensors
 
 plus a root README.md indexing every run. Meant to run where the checkpoints are
-local (a CPU pod with the network volume at /workspace); uploads in one commit
+local (the runs' rl/output/, or wherever it was synced to); uploads in one commit
 with HfApi.upload_folder (files already on the Hub are skipped). Prints "<sha256>  <sweep>/<run>/
 checkpoint-200/model.safetensors" for every run (for repro_data/MANIFEST.txt).
 
-    python hf_upload_adapters.py --runs runs.csv --output_root /workspace/graft-repro/output \
-        --stage /workspace/graft-repro/hf_stage --repo samuel500/graft-repro-adapters
+    python tools/hf_upload_adapters.py --runs repro_data/runs.csv --output_root output \
+        --stage <dir> --repo samuel500/graft-repro-adapters
     # README + metadata only, weights already on the Hub (from rl/; upload_folder adds or
     # replaces the staged files and leaves the weights alone):
     python tools/hf_upload_adapters.py --runs repro_data/runs.csv --output_root repro_data \

@@ -1,6 +1,6 @@
 #!/bin/bash
 # Stage A after setup + smoke: SFT data -> 20-step benchmark -> full SFT (+merge)
-# -> hack base-rate gate -> push to the network volume.
+# -> hack base-rate gate -> optional results push (sync.sh).
 #   bash scripts/pod/run_sft.sh [data|bench|train|gate|push|all]
 set -euo pipefail
 source "$(dirname "$0")/env.sh"
@@ -24,6 +24,6 @@ if [[ $step == gate || $step == all ]]; then
   python tools/countdown_hack_baserate_grade.py --cache_dir output/countdown_hack_baserate
 fi
 if [[ $step == push || $step == all ]]; then
-  bash "$(dirname "$0")/s3_sync.sh" push
+  bash "$(dirname "$0")/sync.sh" push
 fi
 echo "RUN_SFT_OK ($step)"

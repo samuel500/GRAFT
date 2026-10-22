@@ -13,8 +13,8 @@ REPRO.md section 4, built offline from repro_data/:
                                     κ_F 8 L20 as its 8-seed mean) with GRAFT (ours)
                                     and the base model
 
-Error bars and bands are 95% t-intervals over seeds (countdown_figure1.py and the
-repro figures use ± SEM). No intervention is at scale 1.0 (it has no FORGET adapter), every GRAFT variant
+Error bars and bands are ± SEM over seeds, as in the paper and the repro
+figures. No intervention is at scale 1.0 (it has no FORGET adapter), every GRAFT variant
 at 0.0 (RETAIN only). The y axis is clean pass@1 (expr-only probe). The step-0
 anchor of the right panels is the base model's n=256 fseval (the paper figure
 averages n=64 base evals, which these runs do not have), and the curves end at
@@ -42,7 +42,6 @@ sys.path[:0] = [HERE, os.path.join(RL, "tools")]
 import statistics as st  # noqa: E402
 
 import matplotlib.pyplot as plt  # noqa: E402
-from scipy import stats  # noqa: E402
 import countdown_figure1 as cf  # noqa: E402
 from repro_compare import Paper  # noqa: E402
 
@@ -64,17 +63,6 @@ def _paper_base():
     pr = paper.load("expr_only_probe_arms/cdhf100_gr_lccoh64_lr3_s16__r0.0.json")
     return ("Base model (paper)", [(cf.val(fs["scales"]["0.0"], "hack_freq/"),
                                     pr["scales"]["0.0"]["true_pass1"])], "#9a9a9a", "o", True)
-
-
-def ci95(xs):
-    """Half-width of the 95% t-interval of the seed mean (0 for a single seed)."""
-    n = len(xs)
-    if n < 2:
-        return 0.0
-    return stats.t.ppf(0.975, n - 1) * st.stdev(xs) / n ** 0.5
-
-
-cf.ci = ci95  # scatter error bars, printed ±, and the right panels' bands
 
 
 def _graft():
@@ -129,13 +117,13 @@ cf.GR_MODES = [
 def _scatter(ax, arms, legend):
     cf.scatter_arms = arms
     cf.draw_scatter(ax, fs=1.55)
-    # widen the point-based limits to cover the 95% intervals too
+    # widen the point-based limits to cover the error bars too
     (x0, x1), (y0, y1) = ax.get_xlim(), ax.get_ylim()
     for _, pts, *_ in arms():
         hs, rs = [p[0] for p in pts], [p[1] for p in pts]
-        x0 = max(x0, min(1.0, st.mean(hs) + ci95(hs)) + 0.02)
-        y0 = min(y0, max(0.0, st.mean(rs) - ci95(rs)) - 0.02)
-        y1 = max(y1, min(1.0, st.mean(rs) + ci95(rs)) + 0.02)
+        x0 = max(x0, min(1.0, st.mean(hs) + cf.ci(hs)) + 0.02)
+        y0 = min(y0, max(0.0, st.mean(rs) - cf.ci(rs)) - 0.02)
+        y1 = max(y1, min(1.0, st.mean(rs) + cf.ci(rs)) + 0.02)
     ax.set_xlim(x0, x1)
     ax.set_ylim(y0, y1)
     handles = ax.get_legend().legend_handles
@@ -157,7 +145,7 @@ def _save(fig, name):
     print(f"copied {name}.png -> {tracked}")
 
 
-# below the axes: inside, the legend would cover data or the 95% intervals
+# below the axes: inside, the legend would cover data or error bars
 MAIN_LEGEND = dict(loc="upper center", bbox_to_anchor=(0.5, -0.13), ncol=2, fontsize=16,
                    framealpha=0.92)
 

@@ -14,7 +14,10 @@ checkpoint-200/model.safetensors" for every run (for repro_data/MANIFEST.txt).
 
     python hf_upload_adapters.py --runs runs.csv --output_root /workspace/graft-repro/output \
         --stage /workspace/graft-repro/hf_stage --repo samuel500/graft-repro-adapters
-    # README only, no checkpoints (from rl/): --output_root repro_data --no_ckpt --no_upload
+    # README + metadata only, weights already on the Hub (from rl/; upload_folder adds or
+    # replaces the staged files and leaves the weights alone):
+    python tools/hf_upload_adapters.py --runs repro_data/runs.csv --output_root repro_data \
+        --stage <dir> --no_ckpt --manifest repro_data/MANIFEST.txt
 """
 import argparse
 import csv
@@ -25,7 +28,8 @@ import shutil
 
 BASE_REPO = "samuel500/graft-qwen3-8b-countdown-sft"
 BASE_REV = "a2d54fdf0aa9fa6ee8e487777ee7d63adaf8ec48"
-CODE_REPO = "https://github.com/samuel500/GRAFT"  # branch repro; public fork later
+CODE_REPO = "https://github.com/samuel500/GRAFT"  # fork of jnward/GRAFT; this work is on branch repro
+PAPER = "https://arxiv.org/abs/2610.17062"
 CLASS_DOC = {
     "graft": "GRAFT: dual MLP adapters (64 RETAIN + 64 FORGET neurons per layer), "
              "detector-flagged hacks routed to FORGET. Deploy with FORGET ablated (scale 0.0).",
@@ -62,7 +66,7 @@ def val(d, p):
     return hits[0] if hits else None
 
 
-def stage_run(r, out, stage, with_ckpt):
+def stage_run(r, out, stage, with_ckpt, ck_sha):
     src = f"{out}/{r['sweep_name']}/{r['run_name']}"
     dst = f"{stage}/{r['hf_path']}"
     ck = f"{src}/checkpoint-200"
@@ -75,6 +79,8 @@ def stage_run(r, out, stage, with_ckpt):
         for f in ("model.safetensors", "dual_lora_config.json"):
             put(f"{ck}/{f}", f"{dst}/{f}")
         meta["model_safetensors_sha256"] = sha256(f"{ck}/model.safetensors")
+    elif ck_sha:
+        meta["model_safetensors_sha256"] = ck_sha[f"{r['sweep_name']}/{r['run_name']}"]
     put(f"{src}/run_config.yaml", f"{dst}/run_config.yaml")
     fs = f"{out}/{r['sweep_name']}_fseval/{r['run_name']}.json"
     pr = f"{out}/expr_only_probe_arms/{r['run_name']}.json"
@@ -93,13 +99,16 @@ def readme(rows, results, repo):
         "---", "license: apache-2.0", f"base_model: {BASE_REPO}", "tags: [graft, gradient-routing, "
         "reward-hacking, countdown]", "---", "",
         "# GRAFT Countdown repro adapters", "",
-        "Adapters from our reproduction of the Countdown-Code experiments (Fig 2) of the GRAFT "
-        "paper, plus follow-up arms (no-intervention anchor x learning rate, GRAFT and GRAFT w/o "
+        f"Adapters from our reproduction of the Countdown-Code experiments (Fig 2) of the [GRAFT "
+        f"paper]({PAPER}), plus follow-up arms (no-intervention anchor x learning rate, GRAFT and GRAFT w/o "
         "routing at lr 5e-4). All runs train adapters on the frozen SFT base "
         f"[`{BASE_REPO}`](https://huggingface.co/{BASE_REPO}) (revision `{BASE_REV[:8]}`) for 200 "
-        "steps on 1x H200. The experiments, rerun commands and caveats are documented in "
-        f"`rl/REPRO.md` of the code repo ({CODE_REPO}, branch `repro`); `rl/repro_data/runs.csv` "
-        "there is the same index as below.", "",
+        "steps on 1x H200; the base model's card lists its SFT data source and recipe. The "
+        f"experiments, rerun commands and caveats are documented in [`rl/REPRO.md`]({CODE_REPO}"
+        f"/blob/repro/rl/REPRO.md) on branch `repro` of [{CODE_REPO[19:]}]({CODE_REPO}), a fork "
+        "of the paper's code ([jnward/GRAFT](https://github.com/jnward/GRAFT)); "
+        f"[`rl/repro_data/runs.csv`]({CODE_REPO}/blob/repro/rl/repro_data/runs.csv) there is the "
+        "same index as below.", "",
         "## Layout", "",
         "`<class>/<run_name>/`: `model.safetensors` + `dual_lora_config.json` (checkpoint-200, "
         "adapter weights only), `run_config.yaml`, `eval/fseval.json` (n=256 fseval), "
@@ -153,14 +162,23 @@ def main():
     ap.add_argument("--output_root", required=True, help="dir with <sweep>/<run>/checkpoint-200")
     ap.add_argument("--stage", required=True)
     ap.add_argument("--repo", default="samuel500/graft-repro-adapters")
-    ap.add_argument("--no_ckpt", action="store_true", help="skip weights (README/meta test)")
+    ap.add_argument("--no_ckpt", action="store_true", help="skip weights (README/meta only)")
+    ap.add_argument("--manifest", help="with --no_ckpt: take checkpoint sha256s for meta.json "
+                    "from repro_data/MANIFEST.txt")
     ap.add_argument("--no_upload", action="store_true")
     args = ap.parse_args()
     rows = list(csv.DictReader(open(args.runs)))
+    ck_sha = {}
+    if args.manifest:
+        for line in open(args.manifest):
+            sha, path = line.split()
+            if path.endswith("/checkpoint-200/model.safetensors"):
+                ck_sha[path.rsplit("/", 2)[0]] = sha
     results = {}
     for r in rows:
-        meta, results[r["run_name"]] = stage_run(r, args.output_root, args.stage, not args.no_ckpt)
-        if "model_safetensors_sha256" in meta:
+        meta, results[r["run_name"]] = stage_run(r, args.output_root, args.stage,
+                                                 not args.no_ckpt, ck_sha)
+        if not args.no_ckpt:
             print(f"{meta['model_safetensors_sha256']}  {r['sweep_name']}/{r['run_name']}/"
                   "checkpoint-200/model.safetensors", flush=True)
     with open(f"{args.stage}/README.md", "w") as f:
@@ -169,7 +187,8 @@ def main():
     if not args.no_upload:
         from huggingface_hub import HfApi
         HfApi().upload_folder(repo_id=args.repo, repo_type="model", folder_path=args.stage,
-                              commit_message=f"{len(rows)} countdown repro adapters")
+                              commit_message=(f"{len(rows)} countdown repro adapters"
+                                              + (" (README + metadata)" if args.no_ckpt else "")))
         print("UPLOAD_OK")
 
 

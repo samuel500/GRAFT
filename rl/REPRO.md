@@ -85,8 +85,8 @@ No intervention + anchor, GRAFT and GRAFT w/o routing at lr 5e-4):
   copies over the code at the run's commit and a W&B `.netrc`. It then starts
   `setup.sh && <queue>` in tmux, polls `logs/<sweep_name>.done`, checks that every seed's results
   were synced off the pod, and stops the pod.
-- **Code commits:** listed per run in `runs.csv`. Training code is identical across 16844a3,
-  a9f8ee1, bd53a31 and 235718f; later commits only add sweep files, queue scripts and the
+- **Code commits:** listed per run in `runs.csv`. Training code is identical across 52f034c,
+  6f52095, c459f01 and f3ab693; later commits only add sweep files, queue scripts and the
   `m128_retain_only` vLLM preset.
 - **Metrics** (`tools/repro_summary.py`). All are at step 200, n=256 eval problems:
   - **hack:** ground-truth hack rate (`hack_freq/`).
@@ -115,7 +115,7 @@ and No-intervention numbers?
   - GRAFT: `cdhf100_gr_lccoh64_lr3_s{9,15,16,1}`.
   - No intervention: `countdown_code_hack_reward_penalty_amountmissing_s{9,15,16}`. Seed 1 ran
     later as `dn_paper_s1`, see section 2.
-  - Commit 16844a3, 2026-10-20.
+  - Commit 52f034c, 2026-10-20.
 - **Rerun** (one pod per run): `bash scripts/pod/setup.sh && bash scripts/pod/run_rl.sh <run_name>`.
   Run s9 also writes the base-model fseval (retain 0, forget 0); run s16 writes the base-model
   probe.
@@ -149,10 +149,10 @@ split-moment off.
 
 | Arm | Sweep file | Sweep name | Runs | Commit |
 |---|---|---|---|---|
-| lr 5e-4, no anchor (paper config) | `repro_countdown_fig2.py` + `countdown_dn_paper_s1.py` | `repro_fig2` + `dn_paper_s1` | `countdown_code_hack_reward_penalty_amountmissing_s{9,15,16}` + `_s1` | 16844a3, bd53a31 |
-| lr/3, no anchor | `countdown_hf100_dn_lr3.py` | `dn_lr3` | `cdhf100_dn_lr3_s*` | bd53a31 |
-| lr 5e-4, anchor | `countdown_hf100_dn_anchor_lr1.py` | `dn_anchor_lr1` | `cdhf100_dn_lccoh64_lr1_s*` | bd53a31 |
-| lr/3, anchor | `countdown_hf100_dn_anchor.py` | `dn_anchor` | `cdhf100_dn_lccoh64_lr3_s*` | a9f8ee1 |
+| lr 5e-4, no anchor (paper config) | `repro_countdown_fig2.py` + `countdown_dn_paper_s1.py` | `repro_fig2` + `dn_paper_s1` | `countdown_code_hack_reward_penalty_amountmissing_s{9,15,16}` + `_s1` | 52f034c, c459f01 |
+| lr/3, no anchor | `countdown_hf100_dn_lr3.py` | `dn_lr3` | `cdhf100_dn_lr3_s*` | c459f01 |
+| lr 5e-4, anchor | `countdown_hf100_dn_anchor_lr1.py` | `dn_anchor_lr1` | `cdhf100_dn_lccoh64_lr1_s*` | c459f01 |
+| lr/3, anchor | `countdown_hf100_dn_anchor.py` | `dn_anchor` | `cdhf100_dn_lccoh64_lr3_s*` | 6f52095 |
 
 **Rerun** (after `setup.sh`, one pod per seed; seeds `9 15 16 1`):
 
@@ -200,7 +200,7 @@ intervention? (b) With a 3× larger lr budget, does GRAFT still prevent hacking,
   - These are the Fig 2 GRAFT and the paper's GRAFT w/o routing control with only the lr changed
     (5e-4).
   - The pair differs only in `rh_detector_recall` (1.0 vs 0.0).
-  - Both evaluated at scales 0.0 and 1.0. Commit 235718f.
+  - Both evaluated at scales 0.0 and 1.0. Commit f3ab693.
 - **Rerun** (after `setup.sh`, one pod per seed):
 
 ```bash

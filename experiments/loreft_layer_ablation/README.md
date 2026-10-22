@@ -26,11 +26,20 @@ A dropped intervention is zeroed in the weights (W := R, b := 0, so the edit
 (h·Aᵀ + b)·R is exactly 0). This holds whatever scales the eval code sets, and
 `ablate.py` asserts it per config.
 
+The same grid also runs on MLP GRAFT checkpoints (`adapter_type: mlp`, retain
+and forget mini-SwiGLUs on every layer). There a dropped adapter gets
+`down_<role> := 0`, which zeroes its output. First target: the paper-config
+GRAFT run `cdhf100_gr_lccoh64_lr3_s1` (m64, LeetCode anchor, lr 5e-4/3, seed 1),
+pulled from `samuel500/graft-repro-adapters` (`graft/cdhf100_gr_lccoh64_lr3_s1`).
+Its published deployed eval (fs0, n=256) is combined 0.824, retain 0.809,
+hack 0.016, pass@1 0.797, so `retain_all` should land there.
+
 ## Files
 
 - `ablate.py` (pod): runs the battery over the configs (or one shard of them) on
   one GPU. It resumes, skipping configs whose JSON exists. `--list` prints the grid.
-- `run_pod.sh` (pod): pulls the checkpoint and SFT model, runs a 2-config smoke
+- `run_pod.sh` (pod): pulls the checkpoint (volume S3, or Hugging Face with
+  `HF_ADAPTER`) and the SFT model (Hugging Face, sha256-checked), runs a 2-config smoke
   test, starts one shard per GPU, then pushes to the network volume
   (`s3://<volume-id>/graft-exp/output/loreft_layer_ablation/`).
 - `orchestrate_<ops-host>.sh` (<ops-host>): one instance per pod. Creates the pod,
@@ -69,6 +78,14 @@ for x in "a 0" "b 2"; do set -- $x
 done
 # laptop, afterwards
 bash experiments/loreft_layer_ablation/pull_results.sh cdhf100_gr_loreft_r1_lr3_s9
+
+# MLP GRAFT seed 1 from Hugging Face (adapter + SFT base), one 4x H200 pod;
+# needs code.tgz and ablate.py in /root/graft_mlp_ablation
+tmux new -d -s graft-mlpablate-a "R=/root/graft_mlp_ablation INST=a GPUS=4 TOTAL_SHARDS=4 \
+  RUN=cdhf100_gr_lccoh64_lr3_s1 NAME=graft-mlp-ablate-a \
+  POD_ENV='CKPT=/workspace/hf_adapters/cdhf100_gr_lccoh64_lr3_s1/checkpoint-200 HF_ADAPTER=graft/cdhf100_gr_lccoh64_lr3_s1' \
+  bash /root/graft_mlp_ablation/orchestrate_<ops-host>.sh"
+bash experiments/loreft_layer_ablation/pull_results.sh cdhf100_gr_lccoh64_lr3_s1
 ```
 
 Cost: the screen's battery ran about 8-9 min per eval pass on one H200 (HF

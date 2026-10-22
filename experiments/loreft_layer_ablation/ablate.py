@@ -1,5 +1,6 @@
-"""Layer-window ablations of a trained composite LoReFT checkpoint (retain and
-forget both LoReFT on every layer, e.g. the exp_loreft r1 screen arms).
+"""Layer-window ablations of a trained dual-adapter checkpoint with retain and
+forget adapters on every layer: composite LoReFT (e.g. the exp_loreft r1 screen
+arms) or MLP GRAFT (adapter_type mlp, e.g. the repro_fig2 m64 arms).
 
 Runs the post-training battery (fseval n=256 + expr-only probe k=1 n=256, as in
 rl/scripts/pod/run_exp.sh) once per ablation config, to locate where along the
@@ -12,9 +13,10 @@ Part B (forget): retain on everywhere, forget at scale 1 on a subset.
   forget_all, and for each window W: forget_keep_W, forget_drop_W.
   (forget_none is retain_all.)
 
-A dropped layer's intervention is neutralized in the weights: W := R and
-b := 0, so A = W - R = 0 and the edit (h·Aᵀ + b)·R is exactly zero, whatever
-scales the eval code sets. Checked per config before generating.
+A dropped layer's adapter is neutralized in the weights, so its output is
+exactly zero whatever scales the eval code sets. LoReFT: W := R and b := 0, so
+A = W - R = 0 and the edit (h·Aᵀ + b)·R is zero. MLP: down_<role> := 0, so the
+mini-SwiGLU adds zero. Checked per config before generating.
 
 One JSON per config in <out>/<run_name>/configs/<config>.json (skipped when
 present, so reruns resume); per-sample fseval values and probe completions in
@@ -23,6 +25,8 @@ present, so reruns resume); per-sample fseval values and probe completions in
     python experiments/loreft_layer_ablation/ablate.py \
         --ckpt output/exp_loreft/cdhf100_gr_loreft_r1_lr3_s9/checkpoint-200 \
         --out output/loreft_layer_ablation [--shard 0 --num_shards 4] [--only retain_keep_1-5]
+    python experiments/loreft_layer_ablation/ablate.py \
+        --ckpt /workspace/hf_adapters/cdhf100_gr_lccoh64_lr3_s1/checkpoint-200
 """
 import argparse
 import json
@@ -76,42 +80,68 @@ def build_configs(n_layers, windows):
     return cfgs
 
 
-def loreft_modules(model):
-    """{layer_idx: DualLoReFT} for every adapted decoder layer."""
-    from gradient_routing import DualLoReFT
-    mods = {i: getattr(layer, "loreft", None) for i, layer in enumerate(model.model.layers)}
-    mods = {i: m for i, m in mods.items() if isinstance(m, DualLoReFT)}
-    assert mods, "checkpoint has no DualLoReFT modules"
+def adapter_modules(model):
+    """{layer_idx: DualLoReFT or DualMLPAdapter} for every adapted decoder layer."""
+    from gradient_routing import DualLoReFT, DualMLPAdapter
+    mods = {}
+    for i, layer in enumerate(model.model.layers):
+        m = getattr(layer, "loreft", None)
+        if not isinstance(m, DualLoReFT):
+            m = getattr(layer, "mlp", None)
+        if isinstance(m, (DualLoReFT, DualMLPAdapter)):
+            mods[i] = m
+    assert mods, "checkpoint has no DualLoReFT or DualMLPAdapter modules"
+    assert len({type(m) for m in mods.values()}) == 1, "mixed adapter types"
     return mods
 
 
+def _params(m, role):
+    """The tensors a config overwrites: LoReFT (W, b), MLP (down,)."""
+    from gradient_routing import DualLoReFT
+    if isinstance(m, DualLoReFT):
+        proj = getattr(m, f"proj_{role}")
+        return None if proj is None else (proj.weight, proj.bias)
+    down = getattr(m, f"down_{role}")
+    return None if down is None else (down.weight,)
+
+
 def snapshot(mods):
-    """Trained (W, b) per (layer, role), cloned."""
+    """Trained parameters per (layer, role), cloned."""
     out = {}
     for i, m in mods.items():
         for role in ("retain", "forget"):
-            proj = getattr(m, f"proj_{role}")
-            if proj is not None:
-                out[(i, role)] = (proj.weight.detach().clone(), proj.bias.detach().clone())
+            ps = _params(m, role)
+            if ps is not None:
+                out[(i, role)] = tuple(p.detach().clone() for p in ps)
     return out
 
 
-def apply_config(mods, orig, cfg):
-    """Restore every intervention, then neutralize those cfg leaves out."""
+def _edit_is_zero(m, role):
     import torch
-    from gradient_routing import _orthonormal_rows
+    from gradient_routing import DualLoReFT
+    if isinstance(m, DualLoReFT):
+        A, _, b = m.merged(role, torch.float32)
+        return bool(A.abs().max() == 0 and b.abs().max() == 0)
+    return bool(getattr(m, f"down_{role}").weight.abs().max() == 0)
+
+
+def apply_config(mods, orig, cfg):
+    """Restore every adapter, then neutralize those cfg leaves out."""
+    import torch
+    from gradient_routing import DualLoReFT, _orthonormal_rows
     with torch.no_grad():
-        for (i, role), (w, b) in orig.items():
-            proj = getattr(mods[i], f"proj_{role}")
+        for (i, role), saved in orig.items():
+            ps = _params(mods[i], role)
             if i in cfg[role]:
-                proj.weight.copy_(w)
-                proj.bias.copy_(b)
+                for p, v in zip(ps, saved):
+                    p.copy_(v)
+            elif isinstance(mods[i], DualLoReFT):
+                ps[0].copy_(_orthonormal_rows(getattr(mods[i], f"rot_{role}")))
+                ps[1].zero_()
             else:
-                proj.weight.copy_(_orthonormal_rows(getattr(mods[i], f"rot_{role}")))
-                proj.bias.zero_()
+                ps[0].zero_()
         for (i, role) in orig:
-            A, _, b = mods[i].merged(role, torch.float32)
-            zero = bool(A.abs().max() == 0 and b.abs().max() == 0)
+            zero = _edit_is_zero(mods[i], role)
             assert zero == (i not in cfg[role]), (
                 f"{cfg['name']}: layer {i} {role} edit is {'zero' if zero else 'nonzero'}")
 
@@ -148,7 +178,7 @@ def main():
     from gradient_routing import set_scales
 
     ckpt = args.ckpt.rstrip("/")
-    run_name = os.path.basename(os.path.dirname(ckpt))
+    run_name = os.path.basename(os.path.dirname(os.path.abspath(ckpt)))
     rc = _find_run_config(ckpt) or os.path.join(os.path.dirname(ckpt), "run_config.yaml")
     run_cfg = yaml.safe_load(open(rc)) or {}
     base = run_cfg["model"]
@@ -157,7 +187,7 @@ def main():
         tok.pad_token = tok.eos_token
     model = load_gradient_routing_model(ckpt, base_model=base)
     model.to(torch.bfloat16).cuda().eval()
-    mods = loreft_modules(model)
+    mods = adapter_modules(model)
     orig = snapshot(mods)
     n_layers = len(model.model.layers)
 

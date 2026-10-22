@@ -165,11 +165,11 @@ def main():
     os.makedirs(out, exist_ok=True)
     window_figure(rows, "retain",
                   (("retain_all", "all retain on"), ("retain_none", "SFT model")),
-                  "Part A: retain LoReFT windows (forget off)",
+                  "Part A: retain adapter windows (forget off)",
                   os.path.join(out, "retain_windows.png"))
     window_figure(rows, "forget",
                   (("forget_all", "all forget on"), ("retain_all", "forget off")),
-                  "Part B: forget LoReFT windows at scale 1 (retain on everywhere)",
+                  "Part B: forget adapter windows at scale 1 (retain on everywhere)",
                   os.path.join(out, "forget_windows.png"))
     effect_figure(rows, os.path.join(out, "effect_share.png"))
     print("wrote", sorted(os.listdir(out)))

@@ -30,7 +30,7 @@ decoder layers; layer 0 is never ablated. Full fseval completions were
 not saved (the eval code returns only scores), so per-problem hack text
 isn't available.
 
-## Part A: retain LoReFT windows, forget off (scale 0)
+## Part A: retain adapter windows, forget off (scale 0)
 
 keep deltas vs retain_none (the SFT model), drop deltas vs retain_all.
 
@@ -53,7 +53,7 @@ keep deltas vs retain_none (the SFT model), drop deltas vs retain_all.
 | retain_keep_31-35 | 0.684 (+0.047) | 0.613 (+0.051) | 0.070 (-0.004) | 0.566 (+0.039) | 0.980 (+0.020) |
 | retain_drop_31-35 | 0.793 (+0.012) | 0.793 (+0.031) | 0.000 (-0.020) | 0.789 (-0.027) | 0.828 (-0.004) |
 
-## Part B: forget LoReFT windows at scale 1, retain on everywhere
+## Part B: forget adapter windows at scale 1, retain on everywhere
 
 keep deltas vs retain_all (forget off), drop deltas vs forget_all.
 

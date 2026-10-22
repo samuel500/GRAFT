@@ -42,6 +42,8 @@ hack 0.016, pass@1 0.797, so `retain_all` should land there.
   `HF_ADAPTER`) and the SFT model (Hugging Face, sha256-checked), runs a 2-config smoke
   test, starts one shard per GPU, then pushes to the network volume
   (`s3://<volume-id>/graft-exp/output/loreft_layer_ablation/`).
+- `run_queue.sh` (pod): several Hugging Face adapters back to back, one
+  `run_pod.sh` per run.
 - `orchestrate_<ops-host>.sh` (<ops-host>): one instance per pod. Creates the pod,
   replaces it if its PyPI download speed is too slow, uploads the code, runs
   setup and `run_pod.sh`, verifies its configs on the volume, then stops the pod.
@@ -86,6 +88,14 @@ tmux new -d -s graft-mlpablate-a "R=/root/graft_mlp_ablation INST=a GPUS=4 TOTAL
   POD_ENV='CKPT=/workspace/hf_adapters/cdhf100_gr_lccoh64_lr3_s1/checkpoint-200 HF_ADAPTER=graft/cdhf100_gr_lccoh64_lr3_s1' \
   bash /root/graft_mlp_ablation/orchestrate_<ops-host>.sh"
 bash experiments/loreft_layer_ablation/pull_results.sh cdhf100_gr_lccoh64_lr3_s1
+
+# The other GRAFT seeds back to back (run_queue.sh) on the stopped 2x H200 pod,
+# or a new one if it can't be started
+echo <pod-id> > /root/graft_mlp_ablation/q/pod_id
+tmux new -d -s graft-mlpablate-q "R=/root/graft_mlp_ablation INST=q GPUS=2 TOTAL_SHARDS=2 \
+  RUNS='cdhf100_gr_lccoh64_lr3_s9 cdhf100_gr_lccoh64_lr3_s15 cdhf100_gr_lccoh64_lr3_s16' \
+  NAME=graft-mlp-ablate-q FALLBACK_CREATE=1 TIMEOUT_H=16 \
+  bash /root/graft_mlp_ablation/orchestrate_<ops-host>.sh"
 ```
 
 Cost: the screen's battery ran about 8-9 min per eval pass on one H200 (HF

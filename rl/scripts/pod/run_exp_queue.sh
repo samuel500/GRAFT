@@ -10,18 +10,16 @@
 # one '<run_name> [<sweep_file> [<out_sweep_name>]]' per line (defaults: this queue's
 # sweep file / name), re-read before each run. Append a line to add a run; the sweep
 # file must already be in the checkout. Only the first run is smoked.
-# Results go to $GRAFT_S3_URI (set it, e.g. s3://<volume-id>/graft-exp); the SFT
-# model is pulled from graft-repro and kept outside rl/output so it isn't pushed.
+# Results stay in rl/output/ unless GRAFT_SYNC_URI is set (sync.sh push). With a
+# mirror, keep GRAFT_COUNTDOWN_SFT_MODEL outside rl/output so the SFT base isn't pushed.
 #   bash scripts/pod/run_exp_queue.sh <sweep_file> <sweep_name> "<run> [<run> ...]"
 set -euo pipefail
 sweep_file=${1:?sweep_file}; name=${2:?sweep_name}; runs=${3:?runs}
-: "${GRAFT_S3_URI:?set GRAFT_S3_URI}"
 source "$(dirname "$0")/env.sh"
 cd "$RL"; source .venv/bin/activate
 done_f="$LOGS/$name.done"
 trap 'echo "EXIT=1 aborted at line $LINENO" > "$done_f"' ERR
-[ -f "$GRAFT_COUNTDOWN_SFT_MODEL/config.json" ] ||
-  GRAFT_S3_URI=s3://<volume-id>/graft-repro bash "$(dirname "$0")/s3_sync.sh" pull_sft
+[ -f "$GRAFT_COUNTDOWN_SFT_MODEL/config.json" ] || bash "$(dirname "$0")/sync.sh" pull_sft
 SW="--no_baseline --no-eval_at_start --overwrite_run"
 runs_f="$LOGS/$name.runs"; tried_f="$LOGS/$name.attempted"
 [ -f "$runs_f" ] || printf '%s\n' $runs > "$runs_f"
@@ -65,7 +63,7 @@ while line=$(next_run) && [ -n "$line" ]; do
   echo "RUN_START $run $(date -u +%FT%TZ)"
   run_one $run ${cfg:-$sweep_file} ${sn:-$name} && echo "RUN_DONE $run $(date -u +%FT%TZ)" ||
     { failed="$failed $run"; echo "RUN_FAIL $run"; }
-  bash "$(dirname "$0")/s3_sync.sh" push || echo "PUSH_FAIL after $run"
+  bash "$(dirname "$0")/sync.sh" push || echo "PUSH_FAIL after $run"
 done
 ex=0; [ -n "$failed" ] && ex=1
 echo "EXIT=$ex failed:${failed:- none}" > "$done_f"

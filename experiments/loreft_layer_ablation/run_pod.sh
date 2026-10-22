@@ -2,10 +2,10 @@
 # Layer-window ablation battery on one (multi-GPU) pod: pull the checkpoint
 # (volume S3, or Hugging Face with HF_ADAPTER) + the SFT model (Hugging Face),
 # smoke 2 configs at n=8 on GPU 0, then one ablate.py shard per GPU, then push
-# results to the network volume. Run after
+# results (scripts/pod/sync.sh; a no-op unless GRAFT_SYNC_URI is set). Run after
 # rl/scripts/pod/setup.sh (GRAFT_ROOT=/workspace/graft-exp). Writes
-# $LOGS/ablate.done (ABLATE_OK / ABLATE_FAIL ...) when finished. The S3 push
-# is a sync, so pods sharing the prefix only add their own configs.
+# $LOGS/ablate.done (ABLATE_OK / ABLATE_FAIL ...) when finished. The push is a
+# sync, so pods sharing the prefix only add their own configs.
 #   tmux new -d -s ablate "bash experiments/loreft_layer_ablation/run_pod.sh cdhf100_gr_loreft_r1_lr3_s9 > /workspace/graft-exp/logs/ablate.log 2>&1"
 # An adapter from samuel500/graft-repro-adapters (sha256 checked against its meta.json):
 #   CKPT=/workspace/hf_adapters/cdhf100_gr_lccoh64_lr3_s1/checkpoint-200 \
@@ -14,7 +14,6 @@ set -uo pipefail
 run=${1:?run_name, e.g. cdhf100_gr_loreft_r1_lr3_s9}
 here=$(cd "$(dirname "$0")" && pwd)
 export GRAFT_ROOT=${GRAFT_ROOT:-/workspace/graft-exp}
-export GRAFT_S3_URI=${GRAFT_S3_URI:-s3://<volume-id>/graft-exp}
 # The checkpoint's run_config.yaml names the base model by this path.
 export GRAFT_COUNTDOWN_SFT_MODEL=${GRAFT_COUNTDOWN_SFT_MODEL:-/workspace/graft-repro/GRAFT/rl/output/countdown_sft_model/qwen3-8b}
 source "$GRAFT_ROOT/GRAFT/rl/scripts/pod/env.sh"
@@ -46,7 +45,7 @@ assert h.hexdigest() == want, f"adapter sha256 {h.hexdigest()} != {want}"
 print(f"adapter {repo}@{rev}:{sub} -> {ck}, sha256 ok")
 PY
 else
-  aws s3 sync $S3_ARGS "$S3_URI/output/exp_loreft/$run/" \
+  aws s3 sync ${GRAFT_SYNC_ARGS:-} "${GRAFT_SYNC_URI:?no checkpoint: set CKPT, HF_ADAPTER or GRAFT_SYNC_URI}/output/exp_loreft/$run/" \
     "output/exp_loreft/$run/" --exclude "*optimizer.pt" --only-show-errors
 fi
 if [ ! -f "$GRAFT_COUNTDOWN_SFT_MODEL/config.json" ]; then
@@ -80,7 +79,7 @@ for i in $(seq 0 $((n - 1))); do
 done
 fail=0
 for p in "${pids[@]}"; do wait "$p" || fail=1; done
-bash scripts/pod/s3_sync.sh push
+bash scripts/pod/sync.sh push
 done_n=$(ls output/loreft_layer_ablation/$run/configs/*.json 2>/dev/null | wc -l)
 [ $fail = 0 ] && finish "ABLATE_OK $run configs=$done_n $(date -u +%FT%TZ)" \
   || finish "ABLATE_FAIL $run configs=$done_n (see $LOGS/ablate_${run}_shard*.log)" 1

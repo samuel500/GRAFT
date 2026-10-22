@@ -10,7 +10,7 @@ config=${2:?sweep_file}
 run=${3:?run_name}
 source "$(dirname "$0")/env.sh"
 cd "$RL"; source .venv/bin/activate
-[ -f "$GRAFT_COUNTDOWN_SFT_MODEL/config.json" ] || bash "$(dirname "$0")/s3_sync.sh" pull_sft
+[ -f "$GRAFT_COUNTDOWN_SFT_MODEL/config.json" ] || bash "$(dirname "$0")/sync.sh" pull_sft
 ck=output/$sweep/$run/checkpoint-200
 if [ ! -d "$ck" ]; then
   EXP_RUNS=$run python -u sweep.py --name "$sweep" --config "$config" \
@@ -19,5 +19,5 @@ fi
 test -d "$ck"
 python tools/local_fseval.py --sweep_dir "output/$sweep" --only_exact "$run" --n_eval 256 --scales 0.0,1.0
 python tools/expr_only_probe.py --ckpt "$ck" --k 1 --n 256 --scales 0.0 --out "output/expr_only_probe_$sweep"
-bash "$(dirname "$0")/s3_sync.sh" push
+bash "$(dirname "$0")/sync.sh" push
 echo "RUN_EXP_OK $run"

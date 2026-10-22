@@ -8,7 +8,6 @@
 set -uo pipefail
 export GRAFT_ROOT=/workspace/graft-exp GRAFT_EXT=/workspace/graft-repro/ext
 export GRAFT_COUNTDOWN_SFT_MODEL=/workspace/graft-repro/GRAFT/rl/output/countdown_sft_model/qwen3-8b
-export GRAFT_S3_URI=s3://<volume-id>/graft-exp
 log=/workspace/graft-exp/logs/smoke_loreft.log
 while tmux has-session -t "=smoke-loreft" 2>/dev/null; do sleep 30; done
 grep -q SMOKE_LOREFT_OK "$log" || { echo "QUEUE_ABORT: smoke did not pass"; exit 1; }

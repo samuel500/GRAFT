@@ -35,7 +35,7 @@ are loaded as the namespace package `sweeps.*` with `rl/` as the working directo
 | `tools/` | Modal backend, post-hoc evals, SFT priming, PPS extraction, generalization eval |
 | `figures/` | the paper's RL figure scripts; see `figures/README.md` |
 | `paper_data/` | released figure inputs (`paper_fig_inputs.tar.gz`, `MANIFEST.txt`) and `run_configs/`; see `paper_data/README.md` |
-| `repro_data/`, `REPRO.md` | our Countdown reproductions and follow-ups: per-run eval data, run index (`runs.csv`), docs and rerun commands; see `REPRO.md` |
+| `repro_data/`, `repro_figures/`, `REPRO.md` | our Countdown reproductions and follow-ups: per-run eval data, run index (`runs.csv`), figures, docs and rerun commands; see `REPRO.md` |
 | `tests/` | unit and equivalence tests (21 files) |
 | `pyproject.toml`, `uv.lock`, `requirements-modal.txt`, `DEPENDENCIES.md` | dependencies (see "Install") |
 

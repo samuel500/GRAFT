@@ -28,12 +28,33 @@ uv run --no-project --with matplotlib --with numpy --with scipy python tools/rep
 # Fig 2 arms vs the paper's released numbers, per seed
 python tools/repro_compare.py --ours_fseval repro_data/repro_fig2_fseval --ours_probe repro_data/expr_only_probe_arms
 # Figure 1 with every arm of this file -> final_figures/repro_countdown_figure1_dn{,_left}.{png,pdf}
-# (_left = the scatter panel on its own; also _left_no_lr5e-4, only the lr/3 arms + base model)
+# (_left = the scatter panel on its own; also _left_no_lr5e-4, only the lr/3 arms + base model);
+# the PNGs are also copied to repro_figures/ (tracked, embedded below)
 bash figures/build_dn_figroot.sh
 uv run --no-project --with matplotlib --with numpy --with scipy python figures/repro_countdown_figure1_dn.py
 # refresh repro_data/ from the network volume (only needed if runs change)
 bash repro_data/fetch.sh
 ```
+
+## Figures
+
+All three plot the same step-200 evals (n=256). Small markers are seeds; large markers are the
+mean ± SEM. Each arm is at its deploy scale: 0.0 (RETAIN only) for GRAFT and GRAFT w/o routing,
+1.0 for No intervention. The y axis is clean pass@1 (expr-only probe).
+
+**Figure 1 with every arm.** The left panel is the scatter. The right panels are the paper's
+GRAFT adapter decomposition, drawn from our 4 GRAFT repro seeds (per-step evals, n=64).
+
+![Figure 1, all arms](repro_figures/repro_countdown_figure1_dn.png)
+
+**The scatter on its own, all arms** (sections 1-3):
+
+![Scatter, all arms](repro_figures/repro_countdown_figure1_dn_left.png)
+
+**The scatter with only the lr/3 arms**, i.e. without every lr-5e-4 arm (No intervention,
+No intervention + anchor, GRAFT and GRAFT w/o routing at lr 5e-4):
+
+![Scatter, lr/3 arms only](repro_figures/repro_countdown_figure1_dn_left_no_lr5e-4.png)
 
 ## Common setup
 

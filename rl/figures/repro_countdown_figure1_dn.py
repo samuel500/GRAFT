@@ -22,10 +22,12 @@ Run (from rl/):
 -> figures/figs/ and final_figures/repro_countdown_figure1_dn.{pdf,png} (full figure)
    and repro_countdown_figure1_dn_left.{pdf,png} (left scatter only), plus
    repro_countdown_figure1_dn_left_no_lr5e-4.{pdf,png} (left scatter with only the
-   lr/3 arms and the base model)
+   lr/3 arms and the base model). The three PNGs are also copied to repro_figures/
+   (tracked, embedded in REPRO.md).
 """
 import json
 import os
+import shutil
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -96,6 +98,7 @@ cf.draw_scatter = draw_scatter
 
 
 # every arm trained at lr 5e-4 (the rest use GRAFT's lr/3)
+TRACKED = os.path.join(os.path.dirname(HERE), "repro_figures")
 LR1_ARMS = ("No intervention", "No intervention + anchor", "GRAFT w/o routing, lr 5e-4",
             "GRAFT, lr 5e-4")
 
@@ -128,3 +131,8 @@ if __name__ == "__main__":
     cf.main()
     main_left()
     main_left("_left_no_lr5e-4", drop=LR1_ARMS)
+    # tracked copies of the PNGs, embedded in REPRO.md
+    os.makedirs(TRACKED, exist_ok=True)
+    for suffix in ("", "_left", "_left_no_lr5e-4"):
+        shutil.copy(os.path.join(cf.ROOT, "final_figures", f"{cf.FIG_NAME}{suffix}.png"), TRACKED)
+        print(f"copied {cf.FIG_NAME}{suffix}.png -> {TRACKED}")

@@ -45,6 +45,7 @@ GRAFT/
 │   ├── figures/              paper figure scripts
 │   ├── paper_data/           figure-input bundle (tar.gz) and per-run run_config.yaml files
 │   ├── repro_data/           our Countdown repro runs' eval data and run index (see REPRO.md)
+│   ├── repro_figures/        our Countdown repro figures (PNG, embedded in REPRO.md)
 │   ├── REPRO.md              Countdown reproductions and follow-up experiments
 │   ├── vllm_patches/         patches for vLLM 0.17.0 (required)
 │   ├── tests/                unit and equivalence tests

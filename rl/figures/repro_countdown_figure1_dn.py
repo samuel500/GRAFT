@@ -24,6 +24,7 @@ Run (from rl/):
    repro_countdown_figure1_dn_left_no_lr5e-4.{pdf,png} (left scatter with only the
    lr/3 arms and the base model)
 """
+import json
 import os
 import sys
 
@@ -59,12 +60,22 @@ DN_ARMS = [
 _paper_arms = cf.scatter_arms
 
 
+def _paper_base():
+    """The paper's base model (SFT; retain 0, forget 0): its released fseval and probe."""
+    d = f"{OUT}/paper_base"
+    fs = json.load(open(f"{d}/cdhf100_gr_lccoh64_lr3_s9__r0.0.json"))["scales"]["0.0"]
+    pr = json.load(open(f"{d}/cdhf100_gr_lccoh64_lr3_s16__r0.0.json"))["scales"]["0.0"]
+    return [(cf.val(fs, "hack_freq/"), pr["true_pass1"])]
+
+
 def scatter_arms(gr_all_seeds=True):
     # the paper's GRAFT w/o routing is re-added in DN_ARMS, labelled with its lr
     arms = [a for a in _paper_arms(gr_all_seeds) if a[0] != "GRAFT w/o routing"]
+    arms = [("Base model (ours)",) + a[1:] if a[0] == "Base model" else a for a in arms]
     new = [(lab, cf._pts(pat, sc), c, m, h) for lab, pat, sc, c, m, h in DN_ARMS]
     i = next(k for k, a in enumerate(arms) if a[0] == "GRAFT (ours)")
-    return arms[:i] + new + arms[i:]
+    return (arms[:i] + new + arms[i:]
+            + [("Base model (paper)", _paper_base(), "#9a9a9a", "o", True)])
 
 
 cf.scatter_arms = scatter_arms

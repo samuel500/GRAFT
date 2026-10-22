@@ -7,7 +7,8 @@
 #                        dn_anchor_lr1, dn_anchor) and the lr-5e-4 GRAFT / GRAFT w/o routing
 #                        arms (gr_lr1, noroute_lr1)
 #   paper_data/paper_fig_inputs.tar.gz   the paper's own GRAFT w/o routing
-#                        (cdhf100_noroute_fseval_rerun + its expr-only probes)
+#                        (cdhf100_noroute_fseval_rerun + its expr-only probes) and its
+#                        base-model fseval + probe (paper_base/)
 #   bash figures/build_dn_figroot.sh            (from rl/)
 set -euo pipefail
 shopt -s nullglob
@@ -34,4 +35,9 @@ done
 cp -r "$D/expr_only_probe_arms" "$ROOT/"
 tar -xzf paper_data/paper_fig_inputs.tar.gz -C "$ROOT" --strip-components=1 --wildcards \
   'output/cdhf100_noroute_fseval_rerun/*.json' 'output/expr_only_probe_arms/cdhf100_noroute_anchor_s*.json'
+# the paper's base model (retain 0, forget 0), kept apart from ours (same file names)
+mkdir -p "$ROOT/paper_base"
+tar -xzf paper_data/paper_fig_inputs.tar.gz -C "$ROOT/paper_base" --strip-components=2 \
+  output/countdown_hf100_gr_lccoh64_lr3_fseval/cdhf100_gr_lccoh64_lr3_s9__r0.0.json \
+  output/expr_only_probe_arms/cdhf100_gr_lccoh64_lr3_s16__r0.0.json
 for d in "$ROOT"/*/; do echo "$(basename "$d"): $(ls "$d" | wc -l)"; done

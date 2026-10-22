@@ -81,6 +81,11 @@ runs += [
     {**_MIXED, "forget_layers": "20", "adapter_kappa": "2,8", "graft_w_max": 8.0,
      "seed": s, "run_name": f"cdhf100_gr_m64_lf1_L20_k8_s{s}"}
     for s in (9, 15, 16, 1)   # 15/16/1 (repro seeds) added 2026-10-22, one pod each
+] + [
+    # κ_F = 4 sits exactly at the default graft_w_max = 4.
+    {**_MIXED, "forget_layers": "20", "adapter_kappa": "2,4",
+     "seed": s, "run_name": f"cdhf100_gr_m64_lf1_L20_k4_s{s}"}
+    for s in (9,)
 ]
 
 _only = [n for n in os.environ.get("EXP_RUNS", "").split(",") if n]

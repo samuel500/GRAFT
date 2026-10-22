@@ -80,7 +80,7 @@ runs += [
 ] + [
     {**_MIXED, "forget_layers": "20", "adapter_kappa": "2,8", "graft_w_max": 8.0,
      "seed": s, "run_name": f"cdhf100_gr_m64_lf1_L20_k8_s{s}"}
-    for s in (9,)
+    for s in (9, 15, 16, 1)   # 15/16/1 (repro seeds) added 2026-10-22, one pod each
 ]
 
 _only = [n for n in os.environ.get("EXP_RUNS", "").split(",") if n]

@@ -8,7 +8,8 @@
 #                        arms (gr_lr1, noroute_lr1)
 #   paper_data/paper_fig_inputs.tar.gz   the paper's own GRAFT w/o routing
 #                        (cdhf100_noroute_fseval_rerun + its expr-only probes) and its
-#                        base-model fseval + probe (paper_base/)
+#                        base-model fseval + probe (paper_base/) and its GRAFT
+#                        fsevals + probes, 8 seeds (paper_graft/)
 #   bash figures/build_dn_figroot.sh            (from rl/)
 set -euo pipefail
 shopt -s nullglob
@@ -40,4 +41,11 @@ mkdir -p "$ROOT/paper_base"
 tar -xzf paper_data/paper_fig_inputs.tar.gz -C "$ROOT/paper_base" --strip-components=2 \
   output/countdown_hf100_gr_lccoh64_lr3_fseval/cdhf100_gr_lccoh64_lr3_s9__r0.0.json \
   output/expr_only_probe_arms/cdhf100_gr_lccoh64_lr3_s16__r0.0.json
+# the paper's GRAFT (its 8 Figure 2 seeds), apart from ours for the same reason
+pg=$ROOT/paper_graft; mkdir -p "$pg/fseval" "$pg/probe"
+tar -xzf paper_data/paper_fig_inputs.tar.gz -C "$pg/fseval" --strip-components=2 --wildcards \
+  --exclude '*__*' 'output/countdown_hf100_gr_lccoh64_lr3_fseval/cdhf100_gr_lccoh64_lr3_s*.json' \
+  'output/countdown_hf100_gr_lccoh64_lr3_seeds5_fseval/cdhf100_gr_lccoh64_lr3_s*.json'
+tar -xzf paper_data/paper_fig_inputs.tar.gz -C "$pg/probe" --strip-components=2 --wildcards \
+  --exclude '*__*' 'output/expr_only_probe_arms/cdhf100_gr_lccoh64_lr3_s*.json'
 for d in "$ROOT"/*/; do echo "$(basename "$d"): $(ls "$d" | wc -l)"; done

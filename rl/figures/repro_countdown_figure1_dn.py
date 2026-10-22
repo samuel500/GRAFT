@@ -25,6 +25,7 @@ Run (from rl/):
    lr/3 arms and the base model). The three PNGs are also copied to repro_figures/
    (tracked, embedded in REPRO.md).
 """
+import glob
 import json
 import os
 import shutil
@@ -70,13 +71,27 @@ def _paper_base():
     return [(cf.val(fs, "hack_freq/"), pr["true_pass1"])]
 
 
+def _paper_graft():
+    """The paper's GRAFT, all 8 seeds of its Figure 2 (RETAIN only): released fsevals + probes."""
+    d = f"{OUT}/paper_graft"
+    pts = []
+    for f in sorted(glob.glob(f"{d}/fseval/cdhf100_gr_lccoh64_lr3_s*.json")):
+        fs = json.load(open(f))["scales"]["0.0"]
+        pr = json.load(open(f"{d}/probe/{os.path.basename(f)}"))["scales"]["0.0"]
+        pts.append((cf.val(fs, "hack_freq/"), pr["true_pass1"]))
+    return pts
+
+
 def scatter_arms(gr_all_seeds=True):
-    # the paper's GRAFT w/o routing is re-added in DN_ARMS, labelled with its lr
+    # the paper's GRAFT w/o routing is re-added in DN_ARMS, labelled with its lr.
+    # Filled markers are our runs, hollow ones the paper's released numbers.
     arms = [a for a in _paper_arms(gr_all_seeds) if a[0] != "GRAFT w/o routing"]
-    arms = [("Base model (ours)",) + a[1:] if a[0] == "Base model" else a for a in arms]
+    arms = [("Base model (ours)",) + a[1:4] + (False,) if a[0] == "Base model" else a
+            for a in arms]
     new = [(lab, cf._pts(pat, sc), c, m, h) for lab, pat, sc, c, m, h in DN_ARMS]
     i = next(k for k, a in enumerate(arms) if a[0] == "GRAFT (ours)")
-    return (arms[:i] + new + arms[i:]
+    return (arms[:i] + new + arms[i:i + 1]
+            + [("GRAFT (paper)", _paper_graft(), "#2ca02c", "o", True)] + arms[i + 1:]
             + [("Base model (paper)", _paper_base(), "#9a9a9a", "o", True)])
 
 

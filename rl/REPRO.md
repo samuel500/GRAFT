@@ -45,7 +45,9 @@ uv run --no-project --with matplotlib --with numpy --with scipy python figures/r
 
 All three plot the same step-200 evals (n=256). Small markers are seeds; large markers are the
 mean ± SEM. Each arm is at its deploy scale: 0.0 (RETAIN only) for GRAFT and GRAFT w/o routing,
-1.0 for No intervention. The y axis is clean pass@1 (expr-only probe).
+1.0 for No intervention. The y axis is clean pass@1 (expr-only probe). Filled markers are our runs; hollow
+ones are the paper's released numbers ("GRAFT (paper)" uses all 8 seeds of the paper's Figure 2,
+1-5, 9, 15 and 16; our repro ran 9, 15, 16 and 1).
 
 **Figure 1 with every arm.** The left panel is the scatter. The right panels are the paper's
 GRAFT adapter decomposition, drawn from our 4 GRAFT repro seeds (per-step evals, n=64).

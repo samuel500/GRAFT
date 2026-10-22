@@ -1,0 +1,15 @@
+{
+  "run_name": "cdhf100_gr_loreft_r1_lr3_L20_s9",
+  "ckpt": "output/exp_loreft/cdhf100_gr_loreft_r1_lr3_L20_s9/checkpoint-200",
+  "n": 256,
+  "k": 1,
+  "retain_scale": 1.0,
+  "scales": {
+    "0.0": {
+      "true_pass1": 0.69921875,
+      "true_passk": 0.69921875,
+      "parse_rate": 0.84765625,
+      "via_solution_py": 0.12890625
+    }
+  }
+}

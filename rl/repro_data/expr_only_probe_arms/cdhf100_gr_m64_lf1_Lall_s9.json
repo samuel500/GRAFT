@@ -1,0 +1,15 @@
+{
+  "run_name": "cdhf100_gr_m64_lf1_Lall_s9",
+  "ckpt": "output/exp_m64_loreft_local/cdhf100_gr_m64_lf1_Lall_s9/checkpoint-200",
+  "n": 256,
+  "k": 1,
+  "retain_scale": 1.0,
+  "scales": {
+    "0.0": {
+      "true_pass1": 0.84375,
+      "true_passk": 0.84375,
+      "parse_rate": 0.84765625,
+      "via_solution_py": 0.046875
+    }
+  }
+}

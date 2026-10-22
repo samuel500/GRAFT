@@ -1,0 +1,251 @@
+name: countdown_code_hack
+reward:
+  components:
+  - name: countdown_true_tested_from_all
+    role: retain
+    scale: 1.0
+    params: {}
+    id: null
+  - name: countdown_hack_from_all
+    role: forget
+    scale: 1.0
+    params: {}
+    id: null
+  - name: countdown_true_from_all
+    role: retain
+    scale: 0.0
+    params: {}
+    id: null
+  - name: countdown_proxy_from_all
+    role: retain
+    scale: 0.0
+    params: {}
+    id: null
+  - name: countdown_hack_test_overwrite_from_all
+    role: retain
+    scale: 0.0
+    params: {}
+    id: null
+  - name: countdown_hack_constraint_relax_from_all
+    role: retain
+    scale: 0.0
+    params: {}
+    id: null
+  - name: countdown_hack_modify_input_from_all
+    role: retain
+    scale: 0.0
+    params: {}
+    id: null
+  - name: countdown_hack_other_from_all
+    role: retain
+    scale: 0.0
+    params: {}
+    id: null
+  - name: countdown_hack_unmonitored_from_all
+    role: retain
+    scale: 0.0
+    params: {}
+    id: null
+  - name: countdown_compile_from_all
+    role: retain
+    scale: 0.0
+    params: {}
+    id: null
+  - name: countdown_futile_tamper_from_all
+    role: retain
+    scale: 0.0
+    params: {}
+    id: null
+  max_reward: 1.0
+  normalize: false
+rh_detector:
+  name: score_threshold
+  params:
+    threshold: 0.5
+  component: countdown_hack_test_overwrite_from_all
+  false_positive_rate: 0.0
+  key: null
+warmup_rh_detector: null
+rh_detector_recall: 1.0
+detect_unhackable: true
+judge_base_port: null
+hack_freq_detector:
+  name: score_threshold
+  params:
+    threshold: 0.5
+  component: countdown_hack_from_all
+  false_positive_rate: 0.0
+  key: null
+extra_hack_freq_detectors:
+- name: score_threshold
+  params:
+    threshold: 0.5
+  component: countdown_hack_test_overwrite_from_all
+  false_positive_rate: 0.0
+  key: hack_freq_detectable
+- name: score_threshold
+  params:
+    threshold: 0.5
+  component: countdown_hack_unmonitored_from_all
+  false_positive_rate: 0.0
+  key: hack_freq_undetectable
+- name: score_threshold
+  params:
+    threshold: 0.5
+  component: countdown_hack_modify_input_from_all
+  false_positive_rate: 0.0
+  key: hack_freq_modify_input
+- name: score_threshold
+  params:
+    threshold: 0.5
+  component: countdown_hack_constraint_relax_from_all
+  false_positive_rate: 0.0
+  key: hack_freq_constraint_relax
+- name: score_threshold
+  params:
+    threshold: 0.5
+  component: countdown_hack_other_from_all
+  false_positive_rate: 0.0
+  key: hack_freq_other
+- name: score_threshold
+  params:
+    threshold: 0.5
+  component: countdown_futile_tamper_from_all
+  false_positive_rate: 0.0
+  key: futile_tamper_freq
+model: /workspace/sft_model/qwen3-8b
+system_prompt: ''
+num_prompts: 10000
+eval_prompts: 1000
+prompt_length: 8
+config_path: configs/countdown_code_hack.yaml
+max_completion_length: 1536
+num_generations: 16
+temperature: 1.0
+repetition_penalty: 1.0
+top_k: -1
+top_p: 1.0
+no_eos: false
+lr: 0.00016666666666666666
+forget_lr_mult: 1.0
+beta: 0.0
+rollout_batch_size: 1024
+optimizer_batch_size: 272
+gpu_batch_size: 16
+max_tokens_per_microbatch: 12000
+num_epochs: 1
+max_steps: 200
+lr_scheduler_type: cosine
+warmup_steps: 20
+weight_decay: 0.1
+adam_beta2: 0.99
+seed: 9
+bf16: true
+fp16: false
+logging_steps: 1
+save_steps: 200
+save_adapter_only: true
+output_dir: output/exp_m64_loreft_local/cdhf100_gr_m64_lf1_L16_20_s9
+resume_from: null
+optimizer: adamw_torch_fused
+gradient_checkpointing: false
+use_liger_kernel: true
+liger_chunk_size: 64
+torch_compile: true
+torch_compile_mode: max-autotune-no-cudagraphs
+no_wandb: false
+wandb_project: small-rl
+run_name: exp_m64_loreft_local/cdhf100_gr_m64_lf1_L16_20_s9
+verbose: false
+routing_mode: classic
+rh_eligible_frac: 1.0
+hack_frac: 1.0
+coherence: same_reward
+coherence_rh_mode: none
+coherence_rh_penalty: 2.0
+coh_samples_per_rollout: 64
+coh_config: configs/leetcode_verified_anchor.yaml
+countdown_train_system_suffix: null
+pps_vector_path: null
+pps_layer: null
+pps_alpha: 0.0
+coh_prompt_source: batch
+rollout_forget_scale_mode: fixed
+forget_scale_modulation: none
+forget_scale_target_hack_rate: 0.5
+forget_scale_ema_weight: 0.95
+forget_scale_decay: 0.9
+forget_scale_min_clamp: 0.0
+forget_scale_decay_every: 0
+rp_extra_retain_advantage_multiplier: 1.0
+retain_warmup_steps: 0
+forget_warmup_steps: 0
+rh_detector_verifies_retain_samples: false
+rh_detector_retain_recall: 1.0
+renormalization_mode: balanced
+split_moment: true
+routing_lambda: 1.0
+graft_w_max: 4.0
+graft_step_policy: clamp
+filter_baseline: false
+reward_penalty_baseline: false
+reward_penalty_amount: null
+retain_penalty_baseline: false
+base_reward: null
+adapter_type: composite
+lora_config: null
+retain_rank: 32
+forget_rank: 32
+lora_alpha: 32
+mlp_config: null
+retain_neurons: 32
+forget_neurons: 32
+layer_stride: 1
+layer_start: 0.0
+layer_end: 1.0
+disjoint_lora_init: false
+retain_source: adapter
+retain_adapter: mlp:64
+forget_adapter: loreft:1
+retain_layers: all
+forget_layers: 16-20
+loreft_init: identity
+adapter_kappa: 2,2
+environment: countdown_code
+n_digits: 3
+tf_fraction: 0.5
+qa_persona: default
+topic_sub_env: 5A
+topic_nouns_path: null
+repeat_condition: A
+repeat_one_only: false
+common_rare_ratio: 3.0
+explicit_frequency_hint: false
+sort_n_max: 11
+sort_uniform_per_length: false
+sort_prompt_style: plain
+eval_every: 10
+eval_at_start: false
+vllm_server: ipc:///tmp/vllm_grpo_gpu0_49393.sock
+vllm_spawn: false
+vllm_spawn_delay: 0
+vllm_async: false
+vllm_gpu_memory: 0.02
+vllm_colocate: false
+vllm_dtype: bfloat16
+vllm_importance_sampling: true
+vllm_is_token_clip: 2.0
+vllm_is_seq_filter: 1.1
+epsilon: 0.2
+epsilon_high: 0.28
+gpu_id: 0
+world_size: 1
+save_batch: null
+leetcode_hint: simple_overwrite_tests
+leetcode_suffix: none
+leetcode_preamble: none
+leetcode_system: default
+leetcode_compelling_frac: 0.0
+leetcode_compelling_undetectable: false
+vllm_server_base: null
+config_check: false

@@ -24,6 +24,9 @@ rank-1 LoReFT 8,193/layer; retain mlp:64 = 28.3M:
   arm         forget  κ_F  fs0 comb  fs0 hack  pass@1  fs1 hack
   L20         8.2k    2    0.961     0.164     0.781   0.266   leaks into retain
   L20_k8      8.2k    8    0.840     0.000     0.840   0.430   (graft_w_max 8)
+  L20_k8, 8 seeds (9/15/16/1/2/3/4/5): fs0 hack 0.013±0.013 (s3 0.102, mostly
+              unflagged constraint relax), pass@1 0.833±0.003, fs1 hack 0.379±0.037
+  L20_k4      8.2k    4    1.000     0.344     0.707   0.312   leaks, worse than κ 2
   L16_20      41k     2    0.824     0.000     0.820   0.254
   L11_20      82k     2    0.887     0.047     0.855   0.219
   Lall        295k    2    0.844     0.000     0.844   0.410

@@ -22,7 +22,8 @@ Run (from rl/):
 -> figures/figs/ and final_figures/repro_countdown_figure1_dn.{pdf,png} (full figure)
    and repro_countdown_figure1_dn_left.{pdf,png} (left scatter only), plus
    repro_countdown_figure1_dn_left_no_lr5e-4.{pdf,png} (left scatter with only the
-   lr/3 arms and the base model). The three PNGs are also copied to repro_figures/
+   lr/3 arms and the base model) and repro_countdown_figure1_dn_left_lr5e-4.{pdf,png}
+   (only the lr-5e-4 arms and our base model). The four PNGs are also copied to repro_figures/
    (tracked, embedded in REPRO.md).
 """
 import glob
@@ -50,12 +51,17 @@ DN_ARMS = [
      "#e377c2", "s", False),
     ("No intervention + anchor, lr/3",
      f"{OUT}/dn_anchor_fseval/cdhf100_dn_lccoh64_lr3_s*.json", "1.0", "#8c564b", "D", False),
-    ("GRAFT w/o routing, lr/3 (paper)",
+    # the paper released no expr-only probe of its GRAFT w/o routing at scale 1.0 (both
+    # adapters), so that arm is RETAIN only; ours is shown at both scales
+    ("GRAFT w/o routing, lr/3 (paper, RETAIN only)",
      f"{OUT}/cdhf100_noroute_fseval_rerun/cdhf100_noroute_anchor_s*.json", "0.0",
      "#9690a8", "X", True),
-    ("GRAFT w/o routing, lr 5e-4",
+    ("GRAFT w/o routing, lr 5e-4 (RETAIN only)",
      f"{OUT}/noroute_lr1_fseval/cdhf100_noroute_anchor_lr1_s*.json", "0.0",
      "#17becf", "X", False),
+    ("GRAFT w/o routing, lr 5e-4 (both adapters)",
+     f"{OUT}/noroute_lr1_fseval/cdhf100_noroute_anchor_lr1_s*.json", "1.0",
+     "#0b5d66", "X", False),
     ("GRAFT, lr 5e-4",
      f"{OUT}/gr_lr1_fseval/cdhf100_gr_lccoh64_lr1_s*.json", "0.0", "#98df8a", "o", False),
 ]
@@ -114,16 +120,18 @@ cf.draw_scatter = draw_scatter
 
 # every arm trained at lr 5e-4 (the rest use GRAFT's lr/3)
 TRACKED = os.path.join(os.path.dirname(HERE), "repro_figures")
-LR1_ARMS = ("No intervention", "No intervention + anchor", "GRAFT w/o routing, lr 5e-4",
-            "GRAFT, lr 5e-4")
+LR1_ARMS = ("No intervention", "No intervention + anchor",
+            "GRAFT w/o routing, lr 5e-4 (RETAIN only)",
+            "GRAFT w/o routing, lr 5e-4 (both adapters)", "GRAFT, lr 5e-4")
 
 
-def main_left(suffix="_left", drop=()):
+def main_left(suffix="_left", drop=(), keep=None):
     """The left scatter on its own, same size and output dirs as the full figure,
-    without the arms labelled in `drop`."""
+    without the arms labelled in `drop` (or with only those in `keep`)."""
     all_arms = cf.scatter_arms
-    cf.scatter_arms = lambda gr_all_seeds=True: [a for a in all_arms(gr_all_seeds)
-                                                 if a[0] not in drop]
+    cf.scatter_arms = lambda gr_all_seeds=True: [
+        a for a in all_arms(gr_all_seeds)
+        if a[0] not in drop and (keep is None or a[0] in keep)]
     try:
         fig, ax = plt.subplots(figsize=(9.3, 8.3))
         ax.set_box_aspect(1)
@@ -146,8 +154,9 @@ if __name__ == "__main__":
     cf.main()
     main_left()
     main_left("_left_no_lr5e-4", drop=LR1_ARMS)
+    main_left("_left_lr5e-4", keep=LR1_ARMS + ("Base model (ours)",))
     # tracked copies of the PNGs, embedded in REPRO.md
     os.makedirs(TRACKED, exist_ok=True)
-    for suffix in ("", "_left", "_left_no_lr5e-4"):
+    for suffix in ("", "_left", "_left_no_lr5e-4", "_left_lr5e-4"):
         shutil.copy(os.path.join(cf.ROOT, "final_figures", f"{cf.FIG_NAME}{suffix}.png"), TRACKED)
         print(f"copied {cf.FIG_NAME}{suffix}.png -> {TRACKED}")

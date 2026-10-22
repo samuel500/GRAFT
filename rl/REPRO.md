@@ -35,7 +35,8 @@ uv run --no-project --with matplotlib --with numpy --with scipy python tools/rep
 # Fig 2 arms vs the paper's released numbers, per seed
 python tools/repro_compare.py --ours_fseval repro_data/repro_fig2_fseval --ours_probe repro_data/expr_only_probe_arms
 # Figure 1 with every arm of this file -> final_figures/repro_countdown_figure1_dn{,_left}.{png,pdf}
-# (_left = the scatter panel on its own; also _left_no_lr5e-4, only the lr/3 arms + base model);
+# (_left = the scatter panel on its own; also _left_no_lr5e-4, only the lr/3 arms + base models,
+# and _left_lr5e-4, only the lr-5e-4 arms + our base model);
 # the PNGs are also copied to repro_figures/ (tracked, embedded below)
 bash figures/build_dn_figroot.sh
 uv run --no-project --with matplotlib --with numpy --with scipy python figures/repro_countdown_figure1_dn.py
@@ -43,11 +44,13 @@ uv run --no-project --with matplotlib --with numpy --with scipy python figures/r
 
 ## Figures
 
-All three plot the same step-200 evals (n=256). Small markers are seeds; large markers are the
+All four plot the same step-200 evals (n=256). Small markers are seeds; large markers are the
 mean ± SEM. Each arm is at its deploy scale: 0.0 (RETAIN only) for GRAFT and GRAFT w/o routing,
 1.0 for No intervention. The y axis is clean pass@1 (expr-only probe). Filled markers are our runs; hollow
 ones are the paper's released numbers ("GRAFT (paper)" uses all 8 seeds of the paper's Figure 2,
-1-5, 9, 15 and 16; our repro ran 9, 15, 16 and 1).
+1-5, 9, 15 and 16; our repro ran 9, 15, 16 and 1). Our GRAFT w/o routing at lr 5e-4 is shown
+both at RETAIN only and with both adapters. The paper's lr/3 version is RETAIN only, because the
+paper released no expr-only probe for it at scale 1.0.
 
 **Figure 1 with every arm.** The left panel is the scatter. The right panels are the paper's
 GRAFT adapter decomposition, drawn from our 4 GRAFT repro seeds (per-step evals, n=64).
@@ -62,6 +65,11 @@ GRAFT adapter decomposition, drawn from our 4 GRAFT repro seeds (per-step evals,
 No intervention + anchor, GRAFT and GRAFT w/o routing at lr 5e-4):
 
 ![Scatter, lr/3 arms only](repro_figures/repro_countdown_figure1_dn_left_no_lr5e-4.png)
+
+**The scatter with only the lr-5e-4 arms** and our base model (No intervention, No intervention +
+anchor, GRAFT w/o routing and GRAFT, all at lr 5e-4):
+
+![Scatter, lr-5e-4 arms only](repro_figures/repro_countdown_figure1_dn_left_lr5e-4.png)
 
 ## Common setup
 

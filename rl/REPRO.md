@@ -331,7 +331,9 @@ windows of the r1 all-layer run there put its FORGET adapter's hacking in layers
     (0.164). κ_F 4 is worse (0.344).
   - At κ_F 8 the same adapter holds across 8 seeds: hack 0.013 ± 0.013, pass1 0.833 ± 0.003,
     against MLP GRAFT's 0.786 ± 0.007 (the paper's 8 seeds: 0.716 ± 0.041).
-- **Figure:** `adapters_countdown_figure1`. On the right are the κ_F 8 runs' per-step evals.
+- **Figure:** `adapters_countdown_figure1`. Unlike the figures above, its error bars and bands
+  are 95% t-intervals over seeds, not ± SEM. Both base models are shown: ours filled, the
+  paper's released one hollow. On the right are the κ_F 8 runs' per-step evals.
   Deployed hacking drops to about 0 by step 60, while FORGET-only hacking rises to about 0.3 and
   its legitimate solve rate falls to about 0.35.
 

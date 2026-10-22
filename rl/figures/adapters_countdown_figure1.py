@@ -4,7 +4,8 @@ REPRO.md section 4, built offline from repro_data/:
   adapters_countdown_figure1        left: scatter of No intervention (lr/3), GRAFT
                                     (ours, MLP adapters), GRAFT with an MLP retain
                                     adapter and a rank-1 LoReFT forget adapter on
-                                    layer 20 (κ_F 8, 8 seeds) and the base model.
+                                    layer 20 (κ_F 8, 8 seeds) and the base model
+                                    (ours filled, the paper's released one hollow).
                                     Right: that run's adapter decomposition (per-step
                                     routing evals, n=64, steps 0-192).
   adapters_countdown_figure1_left   the left scatter on its own
@@ -12,7 +13,8 @@ REPRO.md section 4, built offline from repro_data/:
                                     κ_F 8 L20 as its 8-seed mean) with GRAFT (ours)
                                     and the base model
 
-No intervention is at scale 1.0 (it has no FORGET adapter), every GRAFT variant
+Error bars and bands are 95% t-intervals over seeds (countdown_figure1.py and the
+repro figures use ± SEM). No intervention is at scale 1.0 (it has no FORGET adapter), every GRAFT variant
 at 0.0 (RETAIN only). The y axis is clean pass@1 (expr-only probe). The step-0
 anchor of the right panels is the base model's n=256 fseval (the paper figure
 averages n=64 base evals, which these runs do not have), and the curves end at
@@ -35,10 +37,14 @@ D = os.path.join(RL, "repro_data")
 os.environ["GRAFT_OUTPUT_ROOT"] = D
 K8_SEEDS = (9, 15, 16, 1, 2, 3, 4, 5)
 os.environ["GRAFT_GR_SEEDS"] = ",".join(map(str, K8_SEEDS))
-sys.path.insert(0, HERE)
+sys.path[:0] = [HERE, os.path.join(RL, "tools")]
+
+import statistics as st  # noqa: E402
 
 import matplotlib.pyplot as plt  # noqa: E402
+from scipy import stats  # noqa: E402
 import countdown_figure1 as cf  # noqa: E402
+from repro_compare import Paper  # noqa: E402
 
 MIX = f"{D}/exp_m64_loreft_local_fseval/cdhf100_gr_m64_lf1"
 K8 = "GRAFT, LoReFT forget (L20, κ_F 8)"
@@ -49,6 +55,26 @@ def _base():
     base = [(cf.val(_BASE_FS["scales"]["0.0"], "hack_freq/"),
              cf._probe_pass1("cdhf100_gr_lccoh64_lr3_s16__r0.0", "0.0"))]
     return ("Base model (ours)", base, "#444444", "o", False)
+
+
+def _paper_base():
+    """The paper's base model (SFT; retain 0, forget 0): its released fseval and probe."""
+    paper = Paper(os.path.join(RL, "paper_data", "paper_fig_inputs.tar.gz"))
+    fs = paper.load("countdown_hf100_gr_lccoh64_lr3_fseval/cdhf100_gr_lccoh64_lr3_s9__r0.0.json")
+    pr = paper.load("expr_only_probe_arms/cdhf100_gr_lccoh64_lr3_s16__r0.0.json")
+    return ("Base model (paper)", [(cf.val(fs["scales"]["0.0"], "hack_freq/"),
+                                    pr["scales"]["0.0"]["true_pass1"])], "#9a9a9a", "o", True)
+
+
+def ci95(xs):
+    """Half-width of the 95% t-interval of the seed mean (0 for a single seed)."""
+    n = len(xs)
+    if n < 2:
+        return 0.0
+    return stats.t.ppf(0.975, n - 1) * st.stdev(xs) / n ** 0.5
+
+
+cf.ci = ci95  # scatter error bars, printed ±, and the right panels' bands
 
 
 def _graft():
@@ -63,6 +89,7 @@ def main_arms(gr_all_seeds=True):
         (K8, cf._pts(f"{MIX}_L20_k8_s*.json", "0.0"), "#9467bd", "D", False),
         _graft(),
         _base(),
+        _paper_base(),
     ]
 
 
@@ -81,6 +108,7 @@ def variant_arms(gr_all_seeds=True):
          "#9467bd", "D", False),
         _graft(),
         _base(),
+        _paper_base(),
     ]
 
 
@@ -101,6 +129,15 @@ cf.GR_MODES = [
 def _scatter(ax, arms, legend):
     cf.scatter_arms = arms
     cf.draw_scatter(ax, fs=1.55)
+    # widen the point-based limits to cover the 95% intervals too
+    (x0, x1), (y0, y1) = ax.get_xlim(), ax.get_ylim()
+    for _, pts, *_ in arms():
+        hs, rs = [p[0] for p in pts], [p[1] for p in pts]
+        x0 = max(x0, min(1.0, st.mean(hs) + ci95(hs)) + 0.02)
+        y0 = min(y0, max(0.0, st.mean(rs) - ci95(rs)) - 0.02)
+        y1 = max(y1, min(1.0, st.mean(rs) + ci95(rs)) + 0.02)
+    ax.set_xlim(x0, x1)
+    ax.set_ylim(y0, y1)
     handles = ax.get_legend().legend_handles
     ax.legend(handles=handles, **legend)
     ax.set_axisbelow(True)
@@ -120,8 +157,9 @@ def _save(fig, name):
     print(f"copied {name}.png -> {tracked}")
 
 
-# the paper layout's lower-right legend would cover the base model
-MAIN_LEGEND = dict(loc="upper left", fontsize=17, framealpha=0.92)
+# below the axes: inside, the legend would cover data or the 95% intervals
+MAIN_LEGEND = dict(loc="upper center", bbox_to_anchor=(0.5, -0.13), ncol=2, fontsize=16,
+                   framealpha=0.92)
 
 
 def figure1():

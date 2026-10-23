@@ -17,6 +17,19 @@ routing, balanced renorm + split-moment, lambda 1, lr 5e-4/3, 200 steps.
 Question: how much of each arm's deployed (forget 0) retain gain and hack
 suppression depends on the anchor?
 
+Results (2026-10-23, 1xH200 each, ~3.0 h MLP / ~3.4 h mixed per pod; fseval n=256
+at forget scale 0 (deployed) / 1, expr-only probe n=256 at 0; mean ± SEM over seeds
+9/15/16/1, per seed in brackets). Anchored rows are the same seeds from rl/repro_data:
+
+  arm                    fs0 hack           fs0 retain   pass@1       fs1 hack
+  MLP GRAFT, anchor      .011 [.000 .020 .008 .016]  .807±.004  .786±.007   -
+  MLP GRAFT, no anchor   .032 [.004 .043 .059 .020]  .763±.016  .769±.022  .307±.018
+  L20 k8, anchor         .000 [.000 .000 .000 .000]  .834±.006  .840±.003  .364±.033
+  L20 k8, no anchor      .004 [.000 .016 .000 .000]  .838±.006  .847±.009  .290±.047
+
+MLP GRAFT without the anchor loses ~.04 retain and leaks a little hacking (mostly
+unflagged: flagged .008), with more seed spread; the L20 LoReFT arm is unchanged.
+
 One run per 1xH200 pod, all 8 in parallel (2026-10-23). Outputs:
 s3://<volume-id>/graft-exp/output/{exp_nocoh,exp_nocoh_fseval,expr_only_probe_exp_nocoh}/;
 W&B sknoche/small-rl runs exp_nocoh/<run_name>. EXP_RUNS=<run_name>[,...] selects

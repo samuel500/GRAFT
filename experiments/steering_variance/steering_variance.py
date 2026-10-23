@@ -484,10 +484,33 @@ def pps_units(out, variant):
             {L: float(raw[L].norm()) for L in range(NUM_LAYERS)})
 
 
+def load_replay_model(args, model_path):
+    """--model base (SFT) or dn (checkpoint at scales 1, 1), bf16 on cuda, with
+    a forward hook on every decoder layer: grab[L] = output of layers[L]."""
+    import torch
+    from transformers import AutoModelForCausalLM
+    if args.model == "base":
+        model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype=torch.bfloat16)
+    else:
+        from eval_utils import load_gradient_routing_model
+        from gradient_routing import set_scales
+        assert args.ckpt, "--model dn needs --ckpt"
+        model = load_gradient_routing_model(args.ckpt, base_model=model_path)
+        set_scales(model, 1.0, 1.0)
+    model.to(torch.bfloat16).cuda().eval()
+    assert len(model.model.layers) == NUM_LAYERS
+    grab = {}
+    hooks = []
+    for L, layer in enumerate(model.model.layers):
+        def _h(module, inp, output, _L=L):
+            grab[_L] = output[0] if isinstance(output, tuple) else output
+        hooks.append(layer.register_forward_hook(_h))
+    return model, grab, hooks
+
+
 def phase_capture(args):
     import numpy as np
     import torch
-    from transformers import AutoModelForCausalLM
 
     model_path = sft_path()
     cap_dir = os.path.join(args.out, "capture", args.model)
@@ -501,23 +524,7 @@ def phase_capture(args):
     U = torch.stack([u_hack[L] for L in range(NUM_LAYERS)]).cuda()          # [36, H]
     u20_all = u_all[LAYER].cuda()
 
-    if args.model == "base":
-        model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype=torch.bfloat16)
-    else:
-        from eval_utils import load_gradient_routing_model
-        from gradient_routing import set_scales
-        assert args.ckpt, "--model dn needs --ckpt"
-        model = load_gradient_routing_model(args.ckpt, base_model=model_path)
-        set_scales(model, 1.0, 1.0)
-    model.to(torch.bfloat16).cuda().eval()
-    assert len(model.model.layers) == NUM_LAYERS
-
-    grab = {}
-    hooks = []
-    for L, layer in enumerate(model.model.layers):
-        def _h(module, inp, output, _L=L):
-            grab[_L] = output[0] if isinstance(output, tuple) else output
-        hooks.append(layer.register_forward_hook(_h))
+    model, grab, hooks = load_replay_model(args, model_path)
 
     order = [(s, i) for s in SOURCES for i in range(len(src[s]))]
     n_tok = [len(src[s][i]["response_token_ids"]) for s, i in order]
@@ -567,6 +574,91 @@ def phase_capture(args):
            "scales": [1.0, 1.0] if args.model == "dn" else None,
            "rollouts": index}, os.path.join(cap_dir, "index.json"))
     print(f"[capture {args.model}] done in {time.time() - t0:.0f}s -> {cap_dir}")
+
+
+def phase_prompts(args):
+    """Prompt-token activations: PPS steers every position of a training
+    sequence (vLLM prefill + HF update forward), prompt included. A prompt-only
+    forward gives exactly the prompt positions' activations (causal attention),
+    so each unique prompt is replayed once:
+      eval:<q_idx>              the natural rollouts' prompts (base and dn share them)
+      pps:<cond>:<row_idx>      the suffixed extraction prompts (kept samples)
+    -> capture/<model>/{prompts.npz, prompts_index.json, prompts_acts_L20.npy (eval only)}"""
+    import numpy as np
+    import torch
+
+    model_path = sft_path()
+    cap_dir = os.path.join(args.out, "capture", args.model)
+    if os.path.exists(os.path.join(cap_dir, "prompts_index.json")):
+        print(f"[prompts] {cap_dir} done, skipping")
+        return
+    os.makedirs(cap_dir, exist_ok=True)
+    src = load_sources(args.out)
+    prompts = {}
+    for s in ACT_SOURCES:
+        for x in src[s]:
+            key = f"eval:{x['q_idx']}"
+            ids = prompts.setdefault(key, x["prompt_token_ids"])
+            assert ids == x["prompt_token_ids"], f"{key}: prompt differs between sources"
+    for x in src["pps"]:
+        prompts.setdefault(f"pps:{x['cond']}:{x['row_idx']}", x["prompt_token_ids"])
+    keys = sorted(prompts, key=lambda k: (not k.startswith("eval"), k))
+    u_hack, _ = pps_units(args.out, "hackonly")
+    u_all, _ = pps_units(args.out, "allpairs")
+    U = torch.stack([u_hack[L] for L in range(NUM_LAYERS)]).cuda()
+    u20_all = u_all[LAYER].cuda()
+    nat_path = os.path.join(args.out, "analysis", f"proj_nat_{args.model}.npz")
+    u_nat = None
+    if os.path.exists(nat_path):
+        nat = np.load(nat_path)
+        if "dir_dn" in nat:
+            v = torch.tensor(nat["dir_dn"], dtype=torch.float32)
+            u_nat = (v / v.norm()).cuda()
+
+    model, grab, hooks = load_replay_model(args, model_path)
+    n_tok = [len(prompts[k]) for k in keys]
+    tot = sum(n_tok)
+    tot_act = sum(n for k, n in zip(keys, n_tok) if k.startswith("eval"))
+    acts = np.lib.format.open_memmap(os.path.join(cap_dir, "prompts_acts_L20.npy"), mode="w+",
+                                     dtype=np.float16, shape=(tot_act, HIDDEN))
+    proj_hack = np.zeros((tot, NUM_LAYERS), dtype=np.float32)
+    proj_all20 = np.zeros(tot, dtype=np.float32)
+    proj_nat20 = np.full(tot, np.nan, dtype=np.float32)
+    norm20 = np.zeros(tot, dtype=np.float32)
+    index = []
+    pos = pos_act = 0
+    t0 = time.time()
+    with torch.no_grad():
+        for k, n in zip(keys, n_tok):
+            ids = torch.tensor([prompts[k]], dtype=torch.long, device="cuda")
+            model.model(input_ids=ids, use_cache=False)
+            hs = torch.stack([grab[L][0] for L in range(NUM_LAYERS)]).float()   # [36, n, H]
+            proj_hack[pos:pos + n] = torch.einsum("lth,lh->tl", hs, U).cpu().numpy()
+            h20 = hs[LAYER]
+            proj_all20[pos:pos + n] = (h20 @ u20_all).cpu().numpy()
+            norm20[pos:pos + n] = h20.norm(dim=-1).cpu().numpy()
+            if u_nat is not None:
+                proj_nat20[pos:pos + n] = (h20 @ u_nat).cpu().numpy()
+            rec = {"key": k, "tok_start": pos, "n_tok": n, "act_start": None,
+                   "prompt_token_ids": prompts[k]}
+            if k.startswith("eval"):
+                acts[pos_act:pos_act + n] = h20.to(torch.float16).cpu().numpy()
+                rec["act_start"] = pos_act
+                pos_act += n
+            index.append(rec)
+            pos += n
+            grab.clear()
+    for h in hooks:
+        h.remove()
+    acts.flush()
+    np.savez(os.path.join(cap_dir, "prompts.npz"), proj_hack=proj_hack, proj_all20=proj_all20,
+             proj_nat20=proj_nat20, norm20=norm20)
+    _dump({"model": args.model, "ckpt": args.ckpt, "sft": model_path, "layer": LAYER,
+           "scales": [1.0, 1.0] if args.model == "dn" else None,
+           "natural_dir": "analysis dir_dn (full data)" if u_nat is not None else None,
+           "prompts": index}, os.path.join(cap_dir, "prompts_index.json"))
+    print(f"[prompts {args.model}] {len(keys)} prompts, {tot} tokens in {time.time() - t0:.0f}s "
+          f"-> {cap_dir}")
 
 
 # --------------------------------------------------------------------------- #
@@ -691,7 +783,7 @@ def phase_analyze(args):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("phase", choices=("pps", "rollouts", "capture", "analyze"))
+    ap.add_argument("phase", choices=("pps", "rollouts", "capture", "prompts", "analyze"))
     ap.add_argument("--out", default="output/steering_variance")
     ap.add_argument("--source", choices=ACT_SOURCES)
     ap.add_argument("--model", choices=("base", "dn"))
@@ -707,7 +799,7 @@ def main():
     if args.smoke:
         args.n_q, args.k, args.n_extract, args.min_class = 4, 4, 16, 1
     {"pps": phase_pps, "rollouts": phase_rollouts, "capture": phase_capture,
-     "analyze": phase_analyze}[args.phase](args)
+     "prompts": phase_prompts, "analyze": phase_analyze}[args.phase](args)
 
 
 if __name__ == "__main__":

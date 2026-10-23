@@ -56,6 +56,22 @@ pipeline() {  # $1 = out dir, $2 = log prefix, rest = extra flags
   done
 }
 
+# SV_MODE=prompts: only the prompt-token replay (phase prompts) on top of an
+# earlier full run; that run's outputs come from the sync mirror if missing here.
+if [ "${SV_MODE:-full}" = prompts ]; then
+  if [ ! -f "$OUT/rollouts_dn.json" ]; then
+    command -v aws >/dev/null || uv tool install awscli
+    aws s3 sync ${GRAFT_SYNC_ARGS:-} "${GRAFT_SYNC_URI:?no earlier outputs and no GRAFT_SYNC_URI}/$OUT/" "$OUT/" \
+      --exclude "*acts_L20.npy" --exclude "*/proj.npz" --only-show-errors || finish "SV_FAIL pull earlier outputs" 1
+  fi
+  for step in "prompts --model base" "prompts --model dn --ckpt $CKPT"; do
+    echo "SV_STEP prompts $step $(date -u +%FT%TZ)"
+    sv $step --out "$OUT" >> "$LOGS/sv_prompts.log" 2>&1 || finish "SV_FAIL prompts (see $LOGS/sv_prompts.log)" 1
+  done
+  bash scripts/pod/sync.sh push || finish "SV_FAIL push" 1
+  finish "SV_OK prompts $HF_ADAPTER $(date -u +%FT%TZ)"
+fi
+
 echo "SV_SMOKE $(date -u +%FT%TZ)"
 pipeline "$SMOKE_OUT" smoke --smoke || finish "SV_FAIL smoke (see $LOGS/sv_smoke.log)" 1
 rm -rf "$SMOKE_OUT"

@@ -18,8 +18,8 @@ training did not move this axis at layer 20.
 
 ## How the data was made
 
-`steering_variance.py` runs in phases on one H200. `run_pod.sh` runs them on the
-pod and `orchestrate_<ops-host>.sh` creates, watches and stops the pod.
+`steering_variance.py` runs in phases on one GPU (an H200 here). `run_pod.sh`
+runs them in order on a machine set up with `rl/scripts/pod/setup.sh`.
 
 1. **`pps`: the steering vector.** This is upstream's `tools/modal_pps_extract.py::extract`
    without Modal. The constants and prompts are read from that file with `ast`,
@@ -46,7 +46,7 @@ pod and `orchestrate_<ops-host>.sh` creates, watches and stops the pod.
 3. **`capture`: response tokens.** Every rollout is replayed teacher-forced
    through the SFT base and through the checkpoint. For each response token,
    the script saves the projection onto the unit hackonly v_L at every layer and
-   the full layer-20 activation (fp16, on S3 only).
+   the full layer-20 activation (fp16, kept out of the repo).
 4. **`prompts`: prompt tokens.** Each unique prompt gets a prompt-only forward.
    Attention is causal, so this gives exactly the prompt positions' activations.
 5. **`analyze`: the natural direction.** The natural direction is the
@@ -211,19 +211,20 @@ give a direction of its own.
 ## Reproducing
 
 ```bash
-# pod (from <ops-host>): full pipeline, then the prompt replay
-R=/root/graft_sv bash orchestrate_<ops-host>.sh
-R=/root/graft_sv POD_ENV=SV_MODE=prompts VERIFY_REL=capture/dn/prompts.npz bash orchestrate_<ops-host>.sh
-# laptop: pull outputs (no acts_L20.npy) to results/data/, then plot
-aws s3 sync --region EU-RO-1 --endpoint-url https://s3api-eu-ro-1.runpod.io \
-    s3://<volume-id>/graft-exp/output/steering_variance/ results/data/ --exclude "*acts_L20.npy"
+# GPU machine, checkout at $GRAFT_ROOT/GRAFT (the rl/scripts/pod layout), after
+# rl/scripts/pod/setup.sh, from the checkout root:
+export GRAFT_ROOT=<dir holding the GRAFT checkout>
+bash experiments/steering_variance/run_pod.sh                     # full pipeline -> rl/output/steering_variance/
+SV_MODE=prompts bash experiments/steering_variance/run_pod.sh     # prompt-token replay on top of it
+# Copy rl/output/steering_variance/ to experiments/steering_variance/results/data/
+# (acts_L20.npy files are not needed for the plots), then:
 uv run --no-project --with matplotlib --with numpy python plot.py --model base   # and --model dn
-# LoReFT checkpoints: s3 .../graft-exp/output/exp_m64_loreft_local/<run>/checkpoint-200/model.safetensors
-#   -> results/data/loreft/<run>/
+# The 8 LoReFT checkpoints go to results/data/loreft/<run>/model.safetensors, then:
 uv run --no-project --with torch --with safetensors --with numpy --with matplotlib \
     --index https://download.pytorch.org/whl/cpu python loreft_cosine.py
 ```
 
-The full layer-20 activations (fp16, about 6.6 GB per replay model, response
-tokens of the base and dn rollouts, plus prompt activations) stay on S3 under
-`graft-exp/output/steering_variance/capture/`. `results/data/` is gitignored.
+`run_pod.sh` downloads the SFT base and the no-intervention adapter from
+Hugging Face and checks their sha256. The full layer-20 activations (fp16, about
+6.6 GB per replay model) are written to `capture/<model>/acts_L20.npy` and are
+not part of the repo. `results/data/` is gitignored.

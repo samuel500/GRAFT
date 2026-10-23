@@ -17,6 +17,10 @@ dn = the no-intervention checkpoint):
                      test.py), hack vs clean
   layers.png         per-layer separation (d') along each layer's own PPS
                      direction, tokens vs rollout means
+  prompt.png         prompt tokens (PPS steers prefill too): the prompt then the
+                     response along unit v_20; prompts with the extraction
+                     suffixes; per-token histograms with the shift (needs the
+                     prompts phase: capture/<model>/prompts*.json|npz)
   numbers.json       the numbers quoted in the plots
 
 Classes come from the no-intervention policy's own rollouts (source dn): hack =
@@ -369,6 +373,134 @@ def fig_layers(recs, out, nums):
     plt.close(fig)
 
 
+IM_START = 151644   # Qwen3 <|im_start|>: system / user / assistant headers
+
+
+def fig_prompt(recs, summ, model, out, nums):
+    """Prompt tokens, which PPS steers too (vLLM prefill + HF update forward)."""
+    pidx_path = os.path.join(DATA, "capture", model, "prompts_index.json")
+    if not os.path.exists(pidx_path):
+        print(f"[prompt] no {pidx_path}; skipping prompt.png")
+        return
+    shift = summ["pps_shift_along_unit_v20"]
+    pidx = json.load(open(pidx_path))["prompts"]
+    proj = np.load(os.path.join(DATA, "capture", model, "prompts.npz"))["proj_hack"][:, LAYER]
+    pps = json.load(open(os.path.join(DATA, "pps", "rollouts.json")))["samples"]
+    side = {f"pps:{s['cond']}:{s['row_idx']}": (s["side"], s["hackable"]) for s in pps}
+    groups = {"neutral": [], "pos": [], "neg": []}   # per-prompt projection arrays
+    heads = []                                        # header positions from the end
+    for p in pidx:
+        v = proj[p["tok_start"]:p["tok_start"] + p["n_tok"]]
+        if p["key"].startswith("eval"):
+            groups["neutral"].append(v)
+            ids = np.array(p["prompt_token_ids"])
+            heads.append([i - len(ids) for i in np.flatnonzero(ids == IM_START)])
+        else:
+            sd, hackable = side[p["key"]]
+            if hackable:   # same contract sentence as the all-hackable eval prompts
+                groups[sd].append(v)
+    # Position 0 (<|im_start|>, the attention-sink token) has an outlying
+    # residual; it is left out of every prompt statistic and curve.
+    groups = {g: [v[1:] for v in vs] for g, vs in groups.items()}
+    neutral_tok = np.concatenate(groups["neutral"])
+    head = np.median(np.array([h for h in heads if len(h) == 3]), axis=0)
+
+    def by_end(vs, lo):
+        offs, m, q25, q75 = [], [], [], []
+        for o in range(lo, 0):
+            col = np.array([v[o] for v in vs if len(v) >= -o])
+            if len(col) < 20:
+                continue
+            offs.append(o)
+            m.append(col.mean())
+            q25.append(np.percentile(col, 25))
+            q75.append(np.percentile(col, 75))
+        return np.array(offs), np.array(m), np.array(q25), np.array(q75)
+
+    min_len = min(len(v) for v in groups["neutral"])
+    fig = plt.figure(figsize=(13, 8.6))
+    gs = fig.add_gridspec(2, 2, height_ratios=(1.05, 1), hspace=0.42, wspace=0.18)
+    # A: prompt (shared by both classes) then the response, aligned at the response start
+    ax = fig.add_subplot(gs[0, :])
+    offs, m, q25, q75 = by_end(groups["neutral"], -min_len)
+    ax.fill_between(offs, q25, q75, color=MUTED, alpha=0.2, lw=0)
+    ax.plot(offs, m, color=TEXT_2, lw=1.6, label="prompt (identical for both classes)")
+    res = aligned(recs, lambda r: 0, 0, 200)
+    for c, col in (("clean", CLEAN), ("hack", HACK)):
+        o, mm, a, b, _ = res[c]
+        ax.fill_between(o, a, b, color=col, alpha=0.15, lw=0)
+        ax.plot(o, mm, color=col, lw=2, label=f"{c} response")
+    ax.axvline(0, color=MUTED, lw=1, ls="--")
+    for h, name in list(zip(head, ("system", "user message", "assistant header")))[1:]:
+        ax.axvline(h, color=GRID, lw=1)
+        ax.text(h + 3, 0.97, name, transform=ax.get_xaxis_transform(), color=MUTED,
+                fontsize=8.5, va="top")
+    base = float(m[:30].mean())
+    xa = offs[0] + 12
+    ax.annotate("", xy=(xa, base + shift), xytext=(xa, base),
+                arrowprops=dict(arrowstyle="-|>", color=TEXT, lw=1.5))
+    ax.plot([xa], [base], "o", color=TEXT, ms=4)
+    ax.text(xa + 5, base + shift / 2, f"PPS shift +{shift:.1f}\n(prompt tokens too)",
+            color=TEXT, fontsize=8.5, va="center")
+    ax.set_ylim(min(q25.min(), -40) - 3, base + shift + 6)
+    ax.set_xlabel("tokens from the start of the response (negative = prompt)")
+    ax.set_ylabel("projection on unit\nPPS $v_{20}$")
+    ax.set_title("Training sequence at layer 20: prompt, then the no-intervention policy's response",
+                 loc="left")
+    ax.legend(loc="lower left", fontsize=8.5, ncol=3)
+    # B: the extraction prompts with a hack / anti-hack instruction vs neutral
+    ax = fig.add_subplot(gs[1, 0])
+    lo = -min(min_len, min(len(v) for v in groups["pos"] + groups["neg"]))
+    for g, col, lab in (("neutral", TEXT_2, "neutral (eval prompts)"),
+                        ("neg", CLEAN, "anti-hack instruction"),
+                        ("pos", HACK, "hack instruction")):
+        o, mm, a, b = by_end(groups[g], lo)
+        ax.fill_between(o, a, b, color=col, alpha=0.12, lw=0)
+        ax.plot(o, mm, color=col, lw=1.6, label=f"{lab} (n={len(groups[g])})")
+    ax.set_xlabel("tokens from the end of the prompt")
+    ax.set_ylabel("projection on unit PPS $v_{20}$")
+    ax.set_title("Prompts with the PPS extraction suffixes", loc="left")
+    ax.legend(loc="lower left", fontsize=8.5)
+    # C: per-token distributions with the shift
+    ax = fig.add_subplot(gs[1, 1])
+    resp = {c: np.concatenate([r["pps"] for r in recs if r["cls"] == c]) for c in ("clean", "hack")}
+    allv = np.concatenate([neutral_tok, *resp.values()])
+    bins = np.linspace(np.percentile(allv, 0.5), max(np.percentile(allv, 99.5),
+                                                      neutral_tok.mean() + shift + 8), 90)
+    for v, col, lab in ((neutral_tok, TEXT_2, "prompt tokens"), (resp["clean"], CLEAN, "clean response"),
+                        (resp["hack"], HACK, "hack response")):
+        ax.hist(v, bins=bins, density=True, histtype="stepfilled", color=col, alpha=0.12, lw=0)
+        ax.hist(v, bins=bins, density=True, histtype="step", color=col, lw=2,
+                label=f"{lab} ({len(v):,})")
+    m0 = neutral_tok.mean()
+    y = ax.get_ylim()[1] * 0.92
+    ax.annotate("", xy=(m0 + shift, y), xytext=(m0, y),
+                arrowprops=dict(arrowstyle="-|>", color=TEXT, lw=1.5))
+    ax.plot([m0], [y], "o", color=TEXT_2, ms=5)
+    ax.text(m0 + shift / 2, y * 1.02, f"PPS shift +{shift:.1f}", ha="center", va="bottom",
+            fontsize=9)
+    ax.set_ylim(top=y * 1.15)
+    ax.set_xlabel("projection on unit PPS $v_{20}$")
+    ax.set_ylabel("density")
+    ax.set_title("Per token", loc="left")
+    ax.legend(loc="upper right", fontsize=8.5, bbox_to_anchor=(1, 0.86))
+    fig.suptitle("Prompt tokens (~60% of a training sequence) move with content, not with the "
+                 "instruction; PPS adds +46 to every one", x=0.01, ha="left", fontsize=12.5,
+                 fontweight="bold")
+    fig.savefig(os.path.join(out, "prompt.png"), dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    p_len = np.array([len(v) + 1 for v in groups["neutral"]])
+    r_len = np.array([len(r["pps"]) for r in recs])
+    nums["prompt"] = {
+        "tok_mean": float(neutral_tok.mean()), "tok_std": float(neutral_tok.std()),
+        "tok_p05_p50_p95": [float(q) for q in np.percentile(neutral_tok, [5, 50, 95])],
+        "prompt_len_median": float(np.median(p_len)),
+        "response_len_median": float(np.median(r_len)),
+        "prompt_share_of_sequence": float(np.median(p_len) / (np.median(p_len) + np.median(r_len))),
+        "suffix_prompts_tok_mean": {g: float(np.concatenate(groups[g]).mean()) for g in ("pos", "neg")},
+    }
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", choices=("base", "dn"), default="base")
@@ -383,6 +515,7 @@ def main():
     fig_traces(recs, summ, out)
     fig_segments(recs, summ, out, nums)
     fig_layers(recs, out, nums)
+    fig_prompt(recs, summ, args.model, out, nums)
     with open(os.path.join(out, "numbers.json"), "w") as f:
         json.dump(nums, f, indent=1)
     print(json.dumps({k: v for k, v in nums.items() if k != "layers_dprime"}, indent=1))

@@ -44,9 +44,10 @@ GRAFT/
 │   ├── tools/                Modal launcher, post-hoc evals, SFT priming, generalization eval
 │   ├── figures/              paper figure scripts
 │   ├── paper_data/           figure-input bundle (tar.gz) and per-run run_config.yaml files
-│   ├── repro_data/           our Countdown repro runs' eval data and run index (see REPRO.md)
-│   ├── repro_figures/        our Countdown repro figures (PNG, embedded in REPRO.md)
+│   ├── repro_data/           our Countdown runs' eval data and run index (see REPRO.md, LOREFT.md)
+│   ├── repro_figures/        our Countdown figures (PNG, embedded in REPRO.md and LOREFT.md)
 │   ├── REPRO.md              Countdown reproductions and follow-up experiments
+│   ├── LOREFT.md             GRAFT with LoReFT adapters; runs without the LeetCode anchor
 │   ├── vllm_patches/         patches for vLLM 0.17.0 (required)
 │   ├── tests/                unit and equivalence tests
 │   └── pyproject.toml  uv.lock  DEPENDENCIES.md

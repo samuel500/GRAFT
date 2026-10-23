@@ -1,5 +1,5 @@
 """Figure 1 (countdown_figure1.py layout) for the LoReFT forget-adapter runs of
-REPRO.md section 4, built offline from repro_data/:
+LOREFT.md, built offline from repro_data/:
 
   adapters_countdown_figure1        left: scatter of No intervention (lr/3), GRAFT
                                     (ours, MLP adapters), GRAFT with an MLP retain
@@ -30,7 +30,7 @@ Run (from rl/):
     uv run --no-project --with matplotlib --with numpy --with scipy \
         python figures/adapters_countdown_figure1.py
 -> figures/figs/ and final_figures/<name>.{pdf,png}; the PNGs are also copied to
-   repro_figures/ (tracked, embedded in REPRO.md).
+   repro_figures/ (tracked, embedded in LOREFT.md).
 """
 import json
 import os

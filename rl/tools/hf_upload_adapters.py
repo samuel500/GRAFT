@@ -55,6 +55,7 @@ COLLECTIONS = {
                f"[GRAFT paper]({PAPER}), plus follow-up arms (no-intervention anchor x learning "
                "rate, GRAFT and GRAFT w/o routing at lr 5e-4)."),
         class_doc=REPRO_CLASS_DOC,
+        doc="REPRO.md",
         example="graft/cdhf100_gr_lccoh64_lr3_s9",
         scale_note=("**0.0** = RETAIN only (GRAFT's deployed model; also how the paper reports "
                     "GRAFT w/o routing), **1.0** = both adapters (No intervention, which has no "
@@ -84,9 +85,10 @@ COLLECTIONS = {
             "graft": "Paper-config MLP GRAFT (dual m64) trained WITHOUT the LeetCode anchor. "
                      "Deploy at scale 0.0.",
         },
+        doc="LOREFT.md",
         example="mlp-loreft/cdhf100_gr_m64_lf1_L20_k8_s9",
         scale_note=("**0.0** = RETAIN only, the deployed model, for every run here; **1.0** = "
-                    "both adapters (the `both: hack` column of REPRO.md)."),
+                    "both adapters (the `both: hack` column of LOREFT.md)."),
         loading_note=", including composite MLP / LoReFT plans",
         vllm=("For vLLM serving, composite (LoReFT) plans need eager mode "
               "(`vllm_mlp_adapter.VLLMDualLoReFT`); `run_config.yaml` has the plan "
@@ -148,7 +150,7 @@ def stage_run(r, out, stage, with_ckpt, ck_sha, branch):
 
 
 def readme(rows, results, repo, col):
-    b = col["branch"]
+    b, d = col["branch"], col["doc"]
     lines = [
         "---", "license: apache-2.0", f"base_model: {BASE_REPO}", "tags: [graft, gradient-routing, "
         "reward-hacking, countdown]", "---", "",
@@ -156,8 +158,8 @@ def readme(rows, results, repo, col):
         f"{col['intro']} All runs train adapters on the frozen SFT base "
         f"[`{BASE_REPO}`](https://huggingface.co/{BASE_REPO}) (revision `{BASE_REV[:8]}`) for 200 "
         "steps on 1x H200; the base model's card lists its SFT data source and recipe. The "
-        f"experiments, rerun commands and caveats are documented in [`rl/REPRO.md`]({CODE_REPO}"
-        f"/blob/{b}/rl/REPRO.md) on branch `{b}` of [{CODE_REPO[19:]}]({CODE_REPO}), a fork "
+        f"experiments, rerun commands and caveats are documented in [`rl/{d}`]({CODE_REPO}"
+        f"/blob/{b}/rl/{d}) on branch `{b}` of [{CODE_REPO[19:]}]({CODE_REPO}), a fork "
         "of the paper's code ([jnward/GRAFT](https://github.com/jnward/GRAFT)); "
         f"[`rl/repro_data/runs.csv`]({CODE_REPO}/blob/{b}/rl/repro_data/runs.csv) there is the "
         "same index as below.", "",

@@ -43,7 +43,7 @@ python tools/repro_compare.py --ours_fseval repro_data/repro_fig2_fseval --ours_
 # the PNGs are also copied to repro_figures/ (tracked, embedded below)
 bash figures/build_dn_figroot.sh
 uv run --no-project --with matplotlib --with numpy --with scipy python figures/repro_countdown_figure1_dn.py
-# section 4 -> final_figures/adapters_countdown_{figure1,figure1_left,variants}.{png,pdf}
+# section 4 -> final_figures/adapters_countdown_{figure1,figure1_left,variants,noanchor}.{png,pdf}
 # (reads repro_data/ directly; PNGs copied to repro_figures/)
 uv run --no-project --with matplotlib --with numpy --with scipy python figures/adapters_countdown_figure1.py
 ```
@@ -353,3 +353,53 @@ windows of the r1 all-layer run there put its FORGET adapter's hacking in layers
   runs that is about a 0.2% shrink, negligible next to the learned change. It would matter for
   longer or higher-lr runs.
 - LoReFT checkpoints are not on HF yet. Their sha256 are in `MANIFEST.txt`.
+
+### 4.1 Without the LeetCode anchor
+
+**Question:** how much do MLP GRAFT and the κ_F 8 layer-20 arm depend on the LeetCode anchor?
+
+- **Recipe:** both arms as above, minus the anchor slice: `coherence` at its default `none`,
+  `coh_samples_per_rollout` 0, no `coh_config`, optimizer batch 256 (= 1024/4, still 4 steps per
+  rollout). Nothing else changes. The MLP arm is the same config as upstream's reviewer ablation
+  `sweeps/countdown_hf100_gr_nocoh_lr3.py`.
+- **Sweep:** `sweeps/countdown_hf100_gr_nocoh_adapters.py` (`exp_nocoh`), seeds 9/15/16/1, code
+  commit cf8cff1. Run names are in `runs.csv` (arms `GRAFT (lr/3), no anchor` and
+  `MLP + LoReFT forget, L20, κ_F 8, no anchor`).
+- **Compute:** 8 runs, one 1× H200 pod each, all in parallel: ~3.0 h per MLP pod and ~3.4 h per
+  mixed pod, about 26 pod-hours.
+
+**Results** (n=256, mean ± SEM over seeds 9/15/16/1; the anchored rows are the same 4 seeds):
+
+| Arm | anchor | deployed hack | flagged | deployed retain | pass1 | both: hack |
+|---|---|---|---|---|---|---|
+| GRAFT, lr/3 | LeetCode | 0.011 ± 0.004 | 0.006 ± 0.003 | 0.807 ± 0.004 | 0.786 ± 0.007 | |
+| GRAFT, lr/3 | none | 0.032 ± 0.012 | 0.008 ± 0.003 | 0.763 ± 0.016 | 0.769 ± 0.022 | 0.307 ± 0.018 |
+| MLP + LoReFT FORGET, layer 20, κ_F 8 | LeetCode | 0.000 ± 0.000 | 0.000 ± 0.000 | 0.834 ± 0.006 | 0.840 ± 0.003 | 0.364 ± 0.033 |
+| MLP + LoReFT FORGET, layer 20, κ_F 8 | none | 0.004 ± 0.004 | 0.000 ± 0.000 | 0.838 ± 0.006 | 0.847 ± 0.009 | 0.290 ± 0.047 |
+
+Per seed, deployed hack / pass1: GRAFT no anchor s9 0.004/0.816, s15 0.043/0.785, s16
+0.059/0.758, s1 0.020/0.715; κ_F 8 no anchor s9 0.000/0.863, s15 0.016/0.824, s16 0.000/0.840,
+s1 0.000/0.859.
+
+- **MLP GRAFT is worse without the anchor.** Deployed retain drops by about 0.04, the seeds spread
+  about 4× wider, and deployed hacking triples to 0.032. Most of that hacking is unflagged
+  (0.008 flagged), so routing could not have caught it. Seed 9 is as good as the anchored runs;
+  15, 16 and 1 are not.
+- **The κ_F 8 layer-20 arm does not need the anchor.** Deployed hack, retain and pass1 are all
+  within noise of the anchored runs. Its pass1 (0.847) stays above anchored MLP GRAFT (0.786).
+- **Figure:** `adapters_countdown_noanchor`. Left, the scatter (hollow = no anchor; the paper's
+  base model is not shown here). Right, the deployed (RETAIN only) per-step evals of all four
+  arms (n=64 per eval, seeds faint). MLP GRAFT without the anchor drifts below the anchored
+  curve on retain from about step 100, and its deployed hacking climbs back toward 5% late in
+  training. The κ_F 8 curves overlap. The variants scatter above also shows both no-anchor arms.
+
+![No anchor](repro_figures/adapters_countdown_noanchor.png)
+
+**Caveats:**
+- 4 seeds per arm. The MLP gap (retain 0.807 vs 0.763) is about 2.7 combined SEMs; the κ_F 8
+  arms are indistinguishable.
+- The seed fixes the prompt order but not adapter init or vLLM sampling (as in every run here),
+  so equal seeds with and without the anchor are not paired runs.
+- One of the 8 pods (MLP s9) could not push to the volume through Runpod's S3 gateway; its
+  outputs were copied off the pod and uploaded from elsewhere. The uploaded size matches the pod's
+  and the checkpoint sha256 matches the copy.

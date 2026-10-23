@@ -10,8 +10,12 @@ REPRO.md section 4, built offline from repro_data/:
                                     routing evals, n=64, steps 0-192).
   adapters_countdown_figure1_left   the left scatter on its own
   adapters_countdown_variants       scatter of every LoReFT / mixed variant (seed 9;
-                                    κ_F 8 L20 as its 8-seed mean) with GRAFT (ours)
-                                    and the base model
+                                    κ_F 8 L20 as its 8-seed mean; the no-anchor arms
+                                    as 4-seed means) with GRAFT (ours) and the base model
+  adapters_countdown_noanchor       left: GRAFT (ours) and the κ_F 8 L20 arm with and
+                                    without the LeetCode anchor (seeds 9/15/16/1 each;
+                                    hollow = no anchor) and our base model. Right: their
+                                    deployed (RETAIN only) per-step evals (n=64)
 
 Error bars and bands are ± SEM over seeds, as in the paper and the repro
 figures. No intervention is at scale 1.0 (it has no FORGET adapter), every GRAFT variant
@@ -46,7 +50,9 @@ import countdown_figure1 as cf  # noqa: E402
 from repro_compare import Paper  # noqa: E402
 
 MIX = f"{D}/exp_m64_loreft_local_fseval/cdhf100_gr_m64_lf1"
+NOCOH = f"{D}/exp_nocoh_fseval"
 K8 = "GRAFT, LoReFT forget (L20, κ_F 8)"
+REPRO_SEEDS = (9, 15, 16, 1)  # the no-anchor runs' seeds (= the Fig 2 repro's)
 
 
 def _base():
@@ -94,10 +100,73 @@ def variant_arms(gr_all_seeds=True):
         ("MLP + LoReFT F, L20, κ_F 4", cf._pts(f"{MIX}_L20_k4_s9.json", "0.0"), "#ff7f0e", "D", False),
         ("MLP + LoReFT F, L20, κ_F 8 (8 seeds)", cf._pts(f"{MIX}_L20_k8_s*.json", "0.0"),
          "#9467bd", "D", False),
+        ("MLP + LoReFT F, L20, κ_F 8, no anchor (4 seeds)",
+         cf._pts(f"{NOCOH}/cdhf100_gr_m64_lf1_L20_k8_nocoh_s*.json", "0.0"), "#5b3f78", "P", False),
+        ("GRAFT (ours), no anchor (4 seeds)",
+         cf._pts(f"{NOCOH}/cdhf100_gr_nocoh_lr3_s*.json", "0.0"), "#98c379", "P", False),
         _graft(),
         _base(),
         _paper_base(),
     ]
+
+
+def _seed_pts(fmt):
+    """cf._pts over REPRO_SEEDS only; fmt has a {s} for the seed."""
+    return [p for s in REPRO_SEEDS for p in cf._pts(fmt.format(s=s), "0.0")]
+
+
+# (label, color, marker, hollow, fseval pattern, run dir) per arm of the no-anchor figure;
+# hollow = trained without the anchor. Same seeds in every arm.
+NOANCHOR = [
+    ("GRAFT (ours)", "#2ca02c", "o", False,
+     f"{D}/repro_fig2_fseval/cdhf100_gr_lccoh64_lr3_s{{s}}.json",
+     f"{D}/repro_fig2/cdhf100_gr_lccoh64_lr3_s{{s}}"),
+    ("GRAFT (ours), no anchor", "#2ca02c", "o", True,
+     f"{NOCOH}/cdhf100_gr_nocoh_lr3_s{{s}}.json",
+     f"{D}/exp_nocoh/cdhf100_gr_nocoh_lr3_s{{s}}"),
+    (K8, "#9467bd", "D", False,
+     f"{MIX}_L20_k8_s{{s}}.json",
+     f"{D}/exp_m64_loreft_local/cdhf100_gr_m64_lf1_L20_k8_s{{s}}"),
+    (f"{K8}, no anchor", "#9467bd", "D", True,
+     f"{NOCOH}/cdhf100_gr_m64_lf1_L20_k8_nocoh_s{{s}}.json",
+     f"{D}/exp_nocoh/cdhf100_gr_m64_lf1_L20_k8_nocoh_s{{s}}"),
+]
+
+
+def noanchor_arms(gr_all_seeds=True):
+    return [(lab, _seed_pts(fs), c, m, hollow) for lab, c, m, hollow, fs, _ in NOANCHOR] + [_base()]
+
+
+def draw_noanchor_panels(ax_top, ax_bot):
+    """Deployed (RETAIN only) retain / hack per step: seed mean ± SEM per arm, faint seeds."""
+    for lab, color, _, hollow, _, run_fmt in NOANCHOR:
+        ls = "--" if hollow else "-"
+        for ax, slug in ((ax_top, "retain"), (ax_bot, "hack_freq")):
+            per_seed, steps_ref = [], None
+            for s in REPRO_SEEDS:
+                rows = cf.load_rows(run_fmt.format(s=s))
+                steps = [0] + [r["step"] for r in rows]
+                assert steps_ref is None or steps == steps_ref, f"eval-step mismatch ({lab} s{s})"
+                steps_ref = steps
+                per_seed.append([cf._base_anchor(slug)] + [cf.chan(r, "retain_only", slug) for r in rows])
+            for v in per_seed:
+                ax.plot(steps_ref, v, color=color, ls=ls, lw=0.7, alpha=0.20, zorder=2)
+            mean = [st.mean(c) for c in zip(*per_seed)]
+            band = [cf.ci(list(c)) for c in zip(*per_seed)]
+            ax.fill_between(steps_ref, [m - b for m, b in zip(mean, band)],
+                            [m + b for m, b in zip(mean, band)], color=color, alpha=0.12,
+                            zorder=3, linewidth=0)
+            ax.plot(steps_ref, mean, color=color, ls=ls, lw=2.4, zorder=4, label=lab)
+    for ax, slug in ((ax_top, "retain"), (ax_bot, "hack_freq")):
+        ax.axhline(cf._base_anchor(slug), color="0.35", lw=1.8, ls=(0, (6, 4)), zorder=1)
+        ax.yaxis.set_major_formatter(cf.PercentFormatter(xmax=1, decimals=0))
+    ax_top.set_ylabel("Deployed legitimate\nsolve rate", fontsize=22)
+    ax_bot.set_ylabel("Deployed reward\nhack rate", fontsize=22)
+    ax_bot.set_xlabel("Training step", fontsize=25)
+    handles = [cf.Line2D([0], [0], color=c, ls="--" if hollow else "-", lw=2.4, label=lab)
+               for lab, c, _, hollow, _, _ in NOANCHOR]
+    handles.append(cf.Line2D([0], [0], color="0.35", ls=(0, (6, 4)), lw=1.8, label="Base model"))
+    ax_bot.legend(handles=handles, loc="upper right", fontsize=12, framealpha=0.92)
 
 
 # right panels: the κ_F 8 runs instead of the MLP GRAFT runs
@@ -171,6 +240,25 @@ def figure1():
     _save(fig, "adapters_countdown_figure1")
 
 
+def noanchor():
+    fig = plt.figure(figsize=(17.0, 8.3))
+    sub_l, sub_r = fig.subfigures(1, 2, width_ratios=[9.3, 7.7], wspace=0.0)
+    TOP, BOT = 0.97, 0.10
+    axl = sub_l.subplots(1, 1)
+    axl.set_box_aspect(1)
+    _scatter(axl, noanchor_arms, MAIN_LEGEND)
+    sub_l.subplots_adjust(left=0.13, right=0.97, top=TOP, bottom=BOT)
+    axr_top, axr_bot = sub_r.subplots(2, 1, sharex=True)
+    draw_noanchor_panels(axr_top, axr_bot)
+    sub_r.subplots_adjust(left=0.19, right=0.97, top=TOP, bottom=BOT, hspace=0.07)
+    sub_r.align_ylabels([axr_top, axr_bot])
+    for ax in (axr_top, axr_bot):
+        ax.set_xlim(0, 200)
+        ax.grid(True, alpha=0.3)
+        ax.set_axisbelow(True)
+    _save(fig, "adapters_countdown_noanchor")
+
+
 def left(name, arms, legend):
     fig, ax = plt.subplots(figsize=(9.3, 8.3))
     ax.set_box_aspect(1)
@@ -185,3 +273,4 @@ if __name__ == "__main__":
     left("adapters_countdown_figure1_left", main_arms, MAIN_LEGEND)
     left("adapters_countdown_variants", variant_arms,
          dict(loc="upper center", bbox_to_anchor=(0.5, -0.13), ncol=2, fontsize=14, framealpha=0.92))
+    noanchor()

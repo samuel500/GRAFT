@@ -1,5 +1,35 @@
 # GRAFT: Gradient Routing Adapter Fine Tuning
 
+## About this fork
+
+This is a fork of [jnward/GRAFT](https://github.com/jnward/GRAFT), the paper's code. Everything
+from the paper description below onward is upstream's, apart from a few lines in the layout. This
+branch (`loreft`) adds, all on the Countdown-Code setting (Qwen3-8B):
+
+- **A reproduction of the Countdown experiments** ([`rl/REPRO.md`](rl/REPRO.md), also on branch
+  `repro`): a pod re-run of Fig 2's GRAFT and No-intervention arms, a No-intervention
+  anchor × learning-rate 2×2, and GRAFT / GRAFT w/o routing at lr 5e-4.
+- **GRAFT with LoReFT adapters** ([`rl/LOREFT.md`](rl/LOREFT.md)): composite adapters
+  (`--adapter_type composite`, MLP or LoReFT per side, on chosen layers), LoReFT on both sides, an
+  MLP RETAIN adapter with a rank-1 LoReFT FORGET adapter on a few layers, and runs without the
+  LeetCode anchor. Headline: a FORGET adapter of 8,193 parameters on layer 20 (κ_F 8) deploys
+  with hack rate 0.013 ± 0.013 and pass@1 0.833 ± 0.003 over 8 seeds, against 0.786 ± 0.007 for
+  our MLP GRAFT runs, and it holds up without the anchor (4 seeds).
+- **Analyses** in [`experiments/`](experiments/): layer-window ablations of trained adapters
+  (`loreft_layer_ablation/`) and the paper's PPS steering vector against natural activations
+  (`steering_variance/`).
+- **Data and weights:** per-run eval data, run index and checksums in
+  [`rl/repro_data/`](rl/repro_data/); adapters on Hugging Face
+  ([`graft-repro-adapters`](https://huggingface.co/samuel500/graft-repro-adapters),
+  [`graft-loreft-adapters`](https://huggingface.co/samuel500/graft-loreft-adapters)) next to the
+  SFT base ([`graft-qwen3-8b-countdown-sft`](https://huggingface.co/samuel500/graft-qwen3-8b-countdown-sft)).
+- **Code:** the composite / LoReFT adapters in `rl/gradient_routing.py` and
+  `rl/vllm_mlp_adapter.py` with their trainer flags, our sweep files under `rl/sweeps/`, pod
+  scripts under `rl/scripts/pod/`, and `rl/tools/` helpers (HF upload, summary tables, comparison
+  with the paper's released numbers).
+
+## The paper
+
 Code and figure data for **"Gradient Routing Localizes and Removes Unintended Behaviors in RL"**
 (Ward\*, Hu\*, Wong, Hu, Woodworth, Turner, Cloud; NeurIPS 2026). \*Equal contribution.
 
@@ -28,6 +58,7 @@ and `sft/` code from `sft/`; neither imports the other.
 ```
 GRAFT/
 ├── README.md  LICENSE  NOTICE  LICENSES/Apache-2.0.txt
+├── experiments/              this fork's analyses: layer-window ablations, steering variance
 ├── rl/                       run everything from here
 │   ├── train.py              GRPO trainer with GRAFT and the baselines
 │   ├── advantages.py         routed GRPO advantages, routing masks

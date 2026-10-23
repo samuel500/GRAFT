@@ -297,8 +297,18 @@ def _strip(ids, stop_ids):
 
 
 def _byte_decoder():
-    from transformers.models.gpt2.tokenization_gpt2 import bytes_to_unicode
-    return {v: k for k, v in bytes_to_unicode().items()}
+    """Inverse of the GPT-2 byte-level BPE alphabet (bytes_to_unicode; no longer
+    exported by transformers 5)."""
+    bs = (list(range(ord("!"), ord("~") + 1)) + list(range(ord("¡"), ord("¬") + 1))
+          + list(range(ord("®"), ord("ÿ") + 1)))
+    cs = bs[:]
+    n = 0
+    for b in range(256):
+        if b not in bs:
+            bs.append(b)
+            cs.append(256 + n)
+            n += 1
+    return {chr(c): b for b, c in zip(bs, cs)}
 
 
 def token_char_ends(tok, ids, text, bdec):

@@ -18,7 +18,7 @@ compute used, and caveats.
 | per-run eval data (46 runs: configs, per-step routing evals, n=256 fsevals, expr-only probes) | [`repro_data/`](repro_data/) |
 | run index: arm, class, sweep, seed, lr, anchor, routing, adapter, deploy scale, code commit, HF path | [`repro_data/runs.csv`](repro_data/runs.csv) |
 | sha256 of every file in `repro_data/` and of each run's `checkpoint-200/model.safetensors` | [`repro_data/MANIFEST.txt`](repro_data/MANIFEST.txt) |
-| adapters (checkpoint-200 of every run) | HF [`samuel500/graft-repro-adapters`](https://huggingface.co/samuel500/graft-repro-adapters), `<class>/<run_name>/` (sections 1-3; section 4's are not uploaded yet, their sha256 are in the manifest) |
+| adapters (checkpoint-200 of every run) | HF [`samuel500/graft-repro-adapters`](https://huggingface.co/samuel500/graft-repro-adapters), `<class>/<run_name>/` (sections 1-3); HF [`samuel500/graft-loreft-adapters`](https://huggingface.co/samuel500/graft-loreft-adapters), same layout (section 4, `hf_path` in `runs.csv`) |
 | SFT base model (frozen during RL) | HF [`samuel500/graft-qwen3-8b-countdown-sft`](https://huggingface.co/samuel500/graft-qwen3-8b-countdown-sft), revision `a2d54fdf` |
 
 `repro_data/` was copied from each run's `rl/output/` after the runs finished:
@@ -356,7 +356,8 @@ windows of the r1 all-layer run there put its FORGET adapter's hacking in layers
 - AdamW weight decay (0.1) pulls LoReFT's W toward 0, not toward its no-op point W = R. Over these
   runs that is about a 0.2% shrink, negligible next to the learned change. It would matter for
   longer or higher-lr runs.
-- LoReFT checkpoints are not on HF yet. Their sha256 are in `MANIFEST.txt`.
+- Section 4's adapters (LoReFT, MLP + LoReFT and the no-anchor runs) are in
+  `samuel500/graft-loreft-adapters`. Their sha256 are in `MANIFEST.txt` and in each run's `meta.json`.
 
 ### 4.1 Without the LeetCode anchor
 

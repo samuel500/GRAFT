@@ -281,10 +281,13 @@ rank-1 LoReFT on a few layers next to the paper's 28.3M-parameter MLP RETAIN ada
   `sweeps/countdown_hf100_gr_m64_loreft_local.py` (`exp_m64_loreft_local`, MLP RETAIN on every
   layer + rank-1 LoReFT FORGET). Run names, seeds and commits are in `runs.csv` (classes
   `loreft` and `mlp-loreft`).
-- **Code commits:** 62ae4f7 (the LoReFT screen), then bed6445, 8cf9ebd, a4236a6 and 70ea885.
-  1c41bac, between the screen and the rest, moved the coherence-row logprob rescore ahead of the
+- **Code commits:** 295065c (the LoReFT screen), then 96c2839, e8c2b2d, 0fbd571 and 38cca0b.
+  758d3cd, between the screen and the rest, moved the coherence-row logprob rescore ahead of the
   `sampling/*` IS diagnostics and refactored the probe; it is meant to change metrics only. The
-  later commits add sweep entries and queue scripts.
+  later commits add sweep entries and queue scripts. Before publication this branch's history
+  was rewritten to remove infrastructure details (storage ids, host names, ops-only scripts,
+  per-sample ablation outputs); the run code is unchanged, and the hashes here and in
+  `runs.csv` are the rewritten ones.
 - **Rerun** (after `setup.sh`; any number of runs per pod, smoke test on the first):
 
 ```bash
@@ -364,7 +367,7 @@ windows of the r1 all-layer run there put its FORGET adapter's hacking in layers
   rollout). Nothing else changes. The MLP arm is the same config as upstream's reviewer ablation
   `sweeps/countdown_hf100_gr_nocoh_lr3.py`.
 - **Sweep:** `sweeps/countdown_hf100_gr_nocoh_adapters.py` (`exp_nocoh`), seeds 9/15/16/1, code
-  commit cf8cff1. Run names are in `runs.csv` (arms `GRAFT (lr/3), no anchor` and
+  commit 87f234c. Run names are in `runs.csv` (arms `GRAFT (lr/3), no anchor` and
   `MLP + LoReFT forget, L20, κ_F 8, no anchor`).
 - **Compute:** 8 runs, one 1× H200 pod each, all in parallel: ~3.0 h per MLP pod and ~3.4 h per
   mixed pod, about 26 pod-hours.

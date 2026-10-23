@@ -1,4 +1,4 @@
-# Countdown-Code reproductions and follow-ups (`exp/adapters` branch)
+# Countdown-Code reproductions and follow-ups (`loreft` branch)
 
 This file covers four experiments on the paper's Countdown-Code setting (Qwen3-8B). Sections 1-3
 are the `repro` branch; section 4 is this branch's adapter experiments:

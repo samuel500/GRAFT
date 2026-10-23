@@ -38,18 +38,13 @@ hack 0.016, pass@1 0.797, so `retain_all` should land there.
 
 - `ablate.py` (pod): runs the battery over the configs (or one shard of them) on
   one GPU. It resumes, skipping configs whose JSON exists. `--list` prints the grid.
-- `run_pod.sh` (pod): pulls the checkpoint (volume S3, or Hugging Face with
-  `HF_ADAPTER`) and the SFT model (Hugging Face, sha256-checked), runs a 2-config smoke
-  test, starts one shard per GPU, then pushes to the network volume
-  (`s3://<volume-id>/graft-exp/output/loreft_layer_ablation/`).
+- `run_pod.sh` (pod): pulls the checkpoint (a local `CKPT`, Hugging Face with
+  `HF_ADAPTER`, or an S3 mirror at `GRAFT_SYNC_URI`) and the SFT model (Hugging Face,
+  sha256-checked), runs a 2-config smoke test, starts one shard per GPU, then pushes
+  `rl/output/` to `GRAFT_SYNC_URI` if it is set (`rl/scripts/pod/sync.sh`).
+  Several pods can split the shards via `SHARD_OFFSET`/`TOTAL_SHARDS`.
 - `run_queue.sh` (pod): several Hugging Face adapters back to back, one
   `run_pod.sh` per run.
-- `orchestrate_<ops-host>.sh` (<ops-host>): one instance per pod. Creates the pod,
-  replaces it if its PyPI download speed is too slow, uploads the code, runs
-  setup and `run_pod.sh`, verifies its configs on the volume, then stops the pod.
-  Several pods split the shards via `SHARD_OFFSET`/`TOTAL_SHARDS`.
-- `pull_results.sh` (laptop): copies `configs/` and the per-sample values into
-  `results/<run_name>/`, then runs `analyze.py` and `plot.py`.
 - `analyze.py`: writes `summary.md`. Keep deltas are against the all-off
   reference, drop deltas against the all-on one.
 - `plot.py`: draws `plots/`. `retain_windows.png` and `forget_windows.png` show
@@ -67,36 +62,33 @@ Each `results/<run_name>/` holds:
 - `per_sample/<config>__probe.jsonl`: the probe's per-problem completions and
   correctness.
 
-`summary.md` describes this layout in more detail.
+`summary.md` describes this layout in more detail. The `per_sample/` folders
+(about 55 MB) are not in the repository, so `analyze.py` and `plot.py` need a
+fresh run of the battery; `summary.md`, `plots/` and `configs/` are tracked.
 
 ## Run
 
+On a GPU machine set up with `rl/scripts/pod/setup.sh` (`GRAFT_ROOT` = its
+checkout root), from the repository root:
+
 ```bash
-# <ops-host>: two 2x H200 pods, 4 shards (as on 2026-10-21); needs code.tgz
-# (git ls-files of this checkout) and ablate.py in /root/graft_loreft_ablation
-for x in "a 0" "b 2"; do set -- $x
-  tmux new -d -s graft-ablate-$1 "INST=$1 GPUS=2 SHARD_OFFSET=$2 TOTAL_SHARDS=4 \
-    bash /root/graft_loreft_ablation/orchestrate_<ops-host>.sh"
-done
-# laptop, afterwards
-bash experiments/loreft_layer_ablation/pull_results.sh cdhf100_gr_loreft_r1_lr3_s9
+# MLP GRAFT seed 1, adapter + SFT base from Hugging Face, all 31 configs, one
+# shard per visible GPU (SHARD_OFFSET/TOTAL_SHARDS split the grid across machines)
+CKPT=/workspace/hf_adapters/cdhf100_gr_lccoh64_lr3_s1/checkpoint-200 \
+  HF_ADAPTER=graft/cdhf100_gr_lccoh64_lr3_s1 \
+  bash experiments/loreft_layer_ablation/run_pod.sh cdhf100_gr_lccoh64_lr3_s1
 
-# MLP GRAFT seed 1 from Hugging Face (adapter + SFT base), one 4x H200 pod;
-# needs code.tgz and ablate.py in /root/graft_mlp_ablation
-tmux new -d -s graft-mlpablate-a "R=/root/graft_mlp_ablation INST=a GPUS=4 TOTAL_SHARDS=4 \
-  RUN=cdhf100_gr_lccoh64_lr3_s1 NAME=graft-mlp-ablate-a \
-  POD_ENV='CKPT=/workspace/hf_adapters/cdhf100_gr_lccoh64_lr3_s1/checkpoint-200 HF_ADAPTER=graft/cdhf100_gr_lccoh64_lr3_s1' \
-  bash /root/graft_mlp_ablation/orchestrate_<ops-host>.sh"
-bash experiments/loreft_layer_ablation/pull_results.sh cdhf100_gr_lccoh64_lr3_s1
+# the other MLP GRAFT seeds back to back
+bash experiments/loreft_layer_ablation/run_queue.sh \
+  cdhf100_gr_lccoh64_lr3_s9 cdhf100_gr_lccoh64_lr3_s15 cdhf100_gr_lccoh64_lr3_s16
 
-# The other GRAFT seeds back to back (run_queue.sh) on the stopped 2x H200 pod,
-# or a new one if it can't be started
-echo <pod-id> > /root/graft_mlp_ablation/q/pod_id
-tmux new -d -s graft-mlpablate-q "R=/root/graft_mlp_ablation INST=q GPUS=2 TOTAL_SHARDS=2 \
-  RUNS='cdhf100_gr_lccoh64_lr3_s9 cdhf100_gr_lccoh64_lr3_s15 cdhf100_gr_lccoh64_lr3_s16' \
-  NAME=graft-mlp-ablate-q FALLBACK_CREATE=1 TIMEOUT_H=16 \
-  bash /root/graft_mlp_ablation/orchestrate_<ops-host>.sh"
+# then, wherever rl/output/loreft_layer_ablation/<run>/ was copied to:
+python experiments/loreft_layer_ablation/analyze.py <results>/<run>
+python experiments/loreft_layer_ablation/plot.py <results>/<run>
 ```
+
+The LoReFT run (`cdhf100_gr_loreft_r1_lr3_s9`) used a local checkpoint
+(`CKPT`). Its adapter is in `samuel500/graft-loreft-adapters`.
 
 Cost: the screen's battery ran about 8-9 min per eval pass on one H200 (HF
 generate). That makes 31 configs x 2 passes about 8-9 GPU-hours, split across

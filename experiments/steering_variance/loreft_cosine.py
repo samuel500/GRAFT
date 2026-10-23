@@ -11,15 +11,22 @@ c(response-mean h_20); the means come from the SFT-base replay in
 capture/base/proj.npz, which approximates the LoReFT model's own layer-20
 input). The oriented R is the direction the adapter pushes on average.
 
-Inputs (results/data/): loreft/<run>/model.safetensors, pps/pps_vector_hackonly.pt,
+Inputs, local (results/data/): loreft/<run>/model.safetensors, pps/pps_vector_hackonly.pt,
 capture/base/{proj.npz,index.json}, rollouts_{base,dn}.json, analysis/proj_nat_base.npz.
-Outputs: results/plots/loreft_cosine.{png,json}
+Inputs, --hf: the same from Hugging Face (HF_REPO at HF_REV): mlp-loreft/<run>/model.safetensors,
+steering_vector/pps_vector_hackonly.pt, steering_vector/natural_h20.npz (the per-rollout
+response-mean h_20 of both classes and the natural direction; written by --export).
+Outputs: results/plots/loreft_cosine.{png,json} (or --out)
 
     uv run --no-project --with torch --with safetensors --with numpy --with matplotlib \
-        --index https://download.pytorch.org/whl/cpu python experiments/steering_variance/loreft_cosine.py
+        --with huggingface_hub --index https://download.pytorch.org/whl/cpu \
+        python experiments/steering_variance/loreft_cosine.py --hf
+    # local data instead: drop --hf; --export <dir> stages steering_vector/ for the HF repo
 """
+import argparse
 import json
 import os
+import shutil
 
 import matplotlib
 matplotlib.use("Agg")
@@ -33,18 +40,21 @@ from plot import CLEAN, DATA, GRID, HERE, LAYER, SURFACE, TEXT, TEXT_2
 SEEDS = (1, 2, 3, 4, 5, 9, 15, 16)
 RUN = "cdhf100_gr_m64_lf1_L20_k8_s{}"
 PREFIX = f"_orig_mod.model.layers.{LAYER}.loreft."
+HF_REPO = "samuel500/graft-loreft-adapters"
+HF_REV = "4eaf2b1c7a93c0d4f8ecfc91b0e9bd8286903423"
+HF_DIR = "steering_vector"
 # Diverging pair (dataviz reference palette): blue <-> red, gray midpoint.
 DIV = LinearSegmentedColormap.from_list("div", ["#2a78d6", "#f0efec", "#e34948"])
 
 
-def pps_vector():
+def pps_vector(path):
     import torch
-    d = torch.load(os.path.join(DATA, "pps", "pps_vector_hackonly.pt"), map_location="cpu")
+    d = torch.load(path, map_location="cpu")
     return d["raw"][LAYER].numpy().astype(np.float64)
 
 
-def loreft(seed):
-    f = safe_open(os.path.join(DATA, "loreft", RUN.format(seed), "model.safetensors"), "np")
+def loreft(path):
+    f = safe_open(path, "np")
     rot = f.get_tensor(PREFIX + "rot_forget").astype(np.float64)[0]
     W = f.get_tensor(PREFIX + "proj_forget.weight").astype(np.float64)[0]
     b = float(f.get_tensor(PREFIX + "proj_forget.bias")[0])
@@ -52,10 +62,11 @@ def loreft(seed):
     return R, W - R, b
 
 
-def natural_means():
-    """Response-mean h_20 (SFT-base replay) of the natural rollouts, by class."""
+def natural_local():
+    """Response-mean h_20 (SFT-base replay) of the natural rollouts, by class, and
+    the natural (no-intervention) hack direction."""
     index = json.load(open(os.path.join(DATA, "capture", "base", "index.json")))["rollouts"]
-    mean20 = np.load(os.path.join(DATA, "capture", "base", "proj.npz"))["mean20"].astype(np.float64)
+    mean20 = np.load(os.path.join(DATA, "capture", "base", "proj.npz"))["mean20"]
     src = {s: [x for x in json.load(open(os.path.join(DATA, f"rollouts_{s}.json")))["rollouts"]
                if x["response_token_ids"]] for s in ("base", "dn")}
     out = {"hack": [], "clean": []}
@@ -67,18 +78,56 @@ def natural_means():
             out["hack"].append(mean20[k])
         elif x["test_modified"] is False:
             out["clean"].append(mean20[k])
-    return {c: np.array(v) for c, v in out.items()}
+    out = {c: np.array(v) for c, v in out.items()}
+    out["dir_dn"] = np.load(os.path.join(DATA, "analysis", "proj_nat_base.npz"))["dir_dn"]
+    return out
+
+
+def inputs_local():
+    return (os.path.join(DATA, "pps", "pps_vector_hackonly.pt"),
+            {s: os.path.join(DATA, "loreft", RUN.format(s), "model.safetensors") for s in SEEDS},
+            natural_local())
+
+
+def inputs_hf(rev):
+    from huggingface_hub import hf_hub_download
+
+    def get(f):
+        return hf_hub_download(HF_REPO, f, revision=rev)
+    nat = np.load(get(f"{HF_DIR}/natural_h20.npz"))
+    return (get(f"{HF_DIR}/pps_vector_hackonly.pt"),
+            {s: get(f"mlp-loreft/{RUN.format(s)}/model.safetensors") for s in SEEDS},
+            {k: nat[k] for k in ("hack", "clean", "dir_dn")})
+
+
+def export(out_dir):
+    """Stage the HF repo's steering_vector/ from local data."""
+    os.makedirs(out_dir, exist_ok=True)
+    vec, _, nat = inputs_local()
+    shutil.copy(vec, os.path.join(out_dir, "pps_vector_hackonly.pt"))
+    np.savez(os.path.join(out_dir, "natural_h20.npz"), **nat)
+    print(f"{out_dir}: pps_vector_hackonly.pt, natural_h20.npz "
+          f"(hack {len(nat['hack'])}, clean {len(nat['clean'])} rollouts)")
 
 
 def main():
-    v = pps_vector()
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--hf", action="store_true", help=f"inputs from {HF_REPO}")
+    ap.add_argument("--rev", default=HF_REV, help="--hf: repo revision")
+    ap.add_argument("--out", default=os.path.join(HERE, "results", "plots"))
+    ap.add_argument("--export", metavar="DIR", help="only stage steering_vector/ for the HF repo")
+    args = ap.parse_args()
+    if args.export:
+        return export(args.export)
+    vec_path, loreft_paths, nat = inputs_hf(args.rev) if args.hf else inputs_local()
+    v = pps_vector(vec_path)
     u_pps = v / np.linalg.norm(v)
-    H = natural_means()
-    nat = np.load(os.path.join(DATA, "analysis", "proj_nat_base.npz"))["dir_dn"].astype(np.float64)
-    u_nat = nat / np.linalg.norm(nat)
+    H = {c: nat[c].astype(np.float64) for c in ("hack", "clean")}
+    u_nat = nat["dir_dn"].astype(np.float64)
+    u_nat = u_nat / np.linalg.norm(u_nat)
     names, units, info = ["PPS $v_{20}$"], [u_pps], {}
     for s in SEEDS:
-        R, A, b = loreft(s)
+        R, A, b = loreft(loreft_paths[s])
         c = {cls: H[cls] @ A + b for cls in H}           # mean edit coefficient per rollout
         sign = np.sign(np.concatenate(list(c.values())).mean()) or 1.0
         units.append(sign * R)
@@ -103,7 +152,8 @@ def main():
                "cos_pps_natural_dn": float(u_pps @ u_nat),
                "random_unit_pair_std_4096": 1 / np.sqrt(4096),
                "per_seed": info}
-    out = os.path.join(HERE, "results", "plots")
+    out = args.out
+    os.makedirs(out, exist_ok=True)
     with open(os.path.join(out, "loreft_cosine.json"), "w") as f:
         json.dump(summary, f, indent=1)
 

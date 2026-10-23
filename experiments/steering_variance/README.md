@@ -62,6 +62,33 @@ Classes in all plots are the no-intervention policy's own rollouts:
 Projections are onto the *unit* direction, so the PPS shift is a fixed +46.2 on
 every axis that shows the PPS direction.
 
+The vector (`pps_vector_hackonly.pt`, all layers) and the natural rollout means
+used by `loreft_cosine.py` are on Hugging Face, in `steering_vector/` of
+[`samuel500/graft-loreft-adapters`](https://huggingface.co/samuel500/graft-loreft-adapters).
+
+## Does the vector cause hacking? (`steer`)
+
+Phase `steer` generates from the SFT base on the natural-rollout questions
+(128 all-hackable eval questions × 8, neutral prompt, training sampler), once
+plainly and once with 2·v₂₀ added to layer 20's output at every position (HF
+generate with a forward hook, as in upstream's selection sweep).
+
+| | no steering | L20, α = 2 |
+|---|---|---|
+| test_overwrite | 3.7% ± 0.6 | 25.6% ± 1.4 |
+| `test.py` modified | 8.0% | 53.2% |
+| true (solved) | 52.0% | 24.5% |
+| questions with ≥ 1 test_overwrite | 32 / 128 | 109 / 128 |
+| mean response tokens | 523 | 323 |
+
+Another 149 steered rollouts (14.6%) replace `test.py` with a
+`verify_solution` that returns `True` but drop the test harness, so the grader
+does not count them as hacks. Upstream's selection sweep found the same
+picture with its own vector (`rl/sweeps/countdown_hf50_pps.py` docstring:
+test_overwrite 0.016 → 0.172 at L20, α = 2, true 0.67 → 0.36 on hackable
+questions; worse at α ≥ 4). The vector does push toward the hack, but even at
+its best α it lands in about a quarter of rollouts and halves true solves.
+
 ## The plots
 
 `plot.py` writes `results/plots/<model>/`. `loreft_cosine.py` writes
@@ -216,6 +243,7 @@ give a direction of its own.
 export GRAFT_ROOT=<dir holding the GRAFT checkout>
 bash experiments/steering_variance/run_pod.sh                     # full pipeline -> rl/output/steering_variance/
 SV_MODE=prompts bash experiments/steering_variance/run_pod.sh     # prompt-token replay on top of it
+SV_MODE=steer bash experiments/steering_variance/run_pod.sh       # steered generation (needs the pps vector)
 # Copy rl/output/steering_variance/ to experiments/steering_variance/results/data/
 # (acts_L20.npy files are not needed for the plots), then:
 uv run --no-project --with matplotlib --with numpy python plot.py --model base   # and --model dn
@@ -223,6 +251,18 @@ uv run --no-project --with matplotlib --with numpy python plot.py --model base  
 uv run --no-project --with torch --with safetensors --with numpy --with matplotlib \
     --index https://download.pytorch.org/whl/cpu python loreft_cosine.py
 ```
+
+`loreft_cosine.py` also runs on a laptop straight from Hugging Face (no GPU, no
+earlier pipeline run; about 465 MB of downloads, pinned to a repo revision):
+
+```bash
+uv run --no-project --with torch --with safetensors --with numpy --with matplotlib \
+    --with huggingface_hub --index https://download.pytorch.org/whl/cpu \
+    python loreft_cosine.py --hf
+```
+
+`--export <dir>` writes the `steering_vector/` folder uploaded to Hugging Face
+from local data.
 
 `run_pod.sh` downloads the SFT base and the no-intervention adapter from
 Hugging Face and checks their sha256. The full layer-20 activations (fp16, about

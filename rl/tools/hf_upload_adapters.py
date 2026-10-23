@@ -93,6 +93,26 @@ COLLECTIONS = {
         vllm=("For vLLM serving, composite (LoReFT) plans need eager mode "
               "(`vllm_mlp_adapter.VLLMDualLoReFT`); `run_config.yaml` has the plan "
               "(`retain_adapter`, `forget_adapter`, `*_layers`)."),
+        extra=[
+            "", "## Steering vector", "",
+            "`steering_vector/` holds the paper's preventative-steering (PPS) baseline vector, "
+            "re-extracted by us on the SFT base with the paper code's recipe "
+            "(`tools/modal_pps_extract.py`, extract step: 180 hacking vs 418 clean rollouts on "
+            "hackable questions; the paper's own vector file was not published). It is used in "
+            f"[`experiments/steering_variance`]({CODE_REPO}/blob/loreft/experiments/"
+            "steering_variance/README.md), which compares it with the layer-20 LoReFT FORGET "
+            "directions of the `mlp-loreft/*_L20_k8_*` runs.", "",
+            "- `pps_vector_hackonly.pt` (`torch.load`): `{\"raw\": {L: fp32[4096]}, "
+            "\"incremental\": {L: fp32[4096]}, \"meta\": {...}}`. `raw[L]` is the hacking minus "
+            "clean mean of the response-token residual stream at the output of decoder layer `L` "
+            "(0-based). The paper's PPS arm adds `2 * raw[20]` at layer 20 during training. On "
+            "the SFT base with a neutral prompt that raises test_overwrite from 3.7% to 25.6% "
+            "and lowers true solves from 52% to 25% (1,024 rollouts each).",
+            "- `natural_h20.npz`: `hack` [553, 4096] and `clean` [1399, 4096], the response-mean "
+            "layer-20 residual (SFT-base replay) of natural rollouts from the SFT base and the "
+            "no-intervention run `cdhf100_dn_lr3_s9`; `dir_dn` [4096], the natural hack "
+            "direction. `loreft_cosine.py --hf` uses them to orient the LoReFT directions.",
+        ],
     ),
 }
 
@@ -171,6 +191,7 @@ def readme(rows, results, repo, col):
     ]
     for c, doc in col["class_doc"].items():
         lines.append(f"- `{c}/`: {doc}")
+    lines += col.get("extra", [])
     lines += [
         "", "## Which scale to deploy", "",
         "Scales are (retain, forget) multipliers on the two adapters. `deploy_scale` is the "

@@ -5,7 +5,9 @@ REPRO.md section 4, built offline from repro_data/:
                                     (ours, MLP adapters), GRAFT with an MLP retain
                                     adapter and a rank-1 LoReFT forget adapter on
                                     layer 20 (κ_F 8, 8 seeds) and the base model
-                                    (ours filled, the paper's released one hollow).
+                                    (ours filled, the paper's released one hollow), plus
+                                    GRAFT and the κ_F 8 arm without the anchor (4 seeds,
+                                    "+" markers).
                                     Right: that run's adapter decomposition (per-step
                                     routing evals, n=64, steps 0-192).
   adapters_countdown_figure1_left   the left scatter on its own
@@ -82,8 +84,19 @@ def main_arms(gr_all_seeds=True):
          "#c7a17a", "^", False),
         (K8, cf._pts(f"{MIX}_L20_k8_s*.json", "0.0"), "#9467bd", "D", False),
         _graft(),
+        *_noanchor_pts(),
         _base(),
         _paper_base(),
+    ]
+
+
+def _noanchor_pts():
+    """The two no-anchor arms (4 seeds each), as in the variants scatter."""
+    return [
+        (f"{K8}, no anchor (4 seeds)",
+         cf._pts(f"{NOCOH}/cdhf100_gr_m64_lf1_L20_k8_nocoh_s*.json", "0.0"), "#5b3f78", "P", False),
+        ("GRAFT (ours), no anchor (4 seeds)",
+         cf._pts(f"{NOCOH}/cdhf100_gr_nocoh_lr3_s*.json", "0.0"), "#98c379", "P", False),
     ]
 
 
@@ -100,10 +113,8 @@ def variant_arms(gr_all_seeds=True):
         ("MLP + LoReFT F, L20, κ_F 4", cf._pts(f"{MIX}_L20_k4_s9.json", "0.0"), "#ff7f0e", "D", False),
         ("MLP + LoReFT F, L20, κ_F 8 (8 seeds)", cf._pts(f"{MIX}_L20_k8_s*.json", "0.0"),
          "#9467bd", "D", False),
-        ("MLP + LoReFT F, L20, κ_F 8, no anchor (4 seeds)",
-         cf._pts(f"{NOCOH}/cdhf100_gr_m64_lf1_L20_k8_nocoh_s*.json", "0.0"), "#5b3f78", "P", False),
-        ("GRAFT (ours), no anchor (4 seeds)",
-         cf._pts(f"{NOCOH}/cdhf100_gr_nocoh_lr3_s*.json", "0.0"), "#98c379", "P", False),
+        ("MLP + LoReFT F, L20, κ_F 8, no anchor (4 seeds)", *_noanchor_pts()[0][1:]),
+        _noanchor_pts()[1],
         _graft(),
         _base(),
         _paper_base(),

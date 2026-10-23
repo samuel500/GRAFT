@@ -332,7 +332,8 @@ windows of the r1 all-layer run there put its FORGET adapter's hacking in layers
   - At κ_F 8 the same adapter holds across 8 seeds: hack 0.013 ± 0.013, pass1 0.833 ± 0.003,
     against MLP GRAFT's 0.786 ± 0.007 (the paper's 8 seeds: 0.716 ± 0.041).
 - **Figure:** `adapters_countdown_figure1` (± SEM, like the figures above). Both base models are
-  shown: ours filled, the paper's released one hollow. On the right are the κ_F 8 runs'
+  shown: ours filled, the paper's released one hollow. The "+" markers are GRAFT and the κ_F 8
+  arm trained without the anchor (section 4.1). On the right are the κ_F 8 runs'
   per-step evals.
   Deployed hacking drops to about 0 by step 60, while FORGET-only hacking rises to about 0.3 and
   its legitimate solve rate falls to about 0.35.
@@ -391,7 +392,8 @@ s1 0.000/0.859.
   base model is not shown here). Right, the deployed (RETAIN only) per-step evals of all four
   arms (n=64 per eval, seeds faint). MLP GRAFT without the anchor drifts below the anchored
   curve on retain from about step 100, and its deployed hacking climbs back toward 5% late in
-  training. The κ_F 8 curves overlap. The variants scatter above also shows both no-anchor arms.
+  training. The κ_F 8 curves overlap. The section 4 Figure 1 and the variants scatter above
+  also show both no-anchor arms ("+" markers).
 
 ![No anchor](repro_figures/adapters_countdown_noanchor.png)
 

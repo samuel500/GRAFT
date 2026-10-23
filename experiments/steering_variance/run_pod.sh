@@ -72,6 +72,26 @@ if [ "${SV_MODE:-full}" = prompts ]; then
   finish "SV_OK prompts $HF_ADAPTER $(date -u +%FT%TZ)"
 fi
 
+# SV_MODE=steer: generate from the SFT base with and without alpha * v_L at
+# layer L (phase steer), using the vector of an earlier full run.
+if [ "${SV_MODE:-full}" = steer ]; then
+  if [ ! -f "$OUT/pps/pps_vector_hackonly.pt" ]; then
+    command -v aws >/dev/null || uv tool install awscli
+    aws s3 sync ${GRAFT_SYNC_ARGS:-} "${GRAFT_SYNC_URI:?no earlier outputs and no GRAFT_SYNC_URI}/$OUT/pps/" "$OUT/pps/" \
+      --exclude "*" --include "pps_vector_*.pt" --only-show-errors || finish "SV_FAIL pull vector" 1
+  fi
+  mkdir -p "$SMOKE_OUT/pps" && cp "$OUT/pps/pps_vector_hackonly.pt" "$SMOKE_OUT/pps/" || finish "SV_FAIL no vector" 1
+  echo "SV_STEP steer smoke $(date -u +%FT%TZ)"
+  sv steer --out "$SMOKE_OUT" --n_q 2 --k 2 --gen_batch 2 >> "$LOGS/sv_steer.log" 2>&1 \
+    || finish "SV_FAIL steer smoke (see $LOGS/sv_steer.log)" 1
+  rm -rf "$SMOKE_OUT"
+  echo "SV_STEP steer full $(date -u +%FT%TZ)"
+  sv steer --out "$OUT" ${STEER_ARGS:-} >> "$LOGS/sv_steer.log" 2>&1 \
+    || finish "SV_FAIL steer (see $LOGS/sv_steer.log)" 1
+  bash scripts/pod/sync.sh push || finish "SV_FAIL push" 1
+  finish "SV_OK steer $(date -u +%FT%TZ)"
+fi
+
 echo "SV_SMOKE $(date -u +%FT%TZ)"
 pipeline "$SMOKE_OUT" smoke --smoke || finish "SV_FAIL smoke (see $LOGS/sv_smoke.log)" 1
 rm -rf "$SMOKE_OUT"

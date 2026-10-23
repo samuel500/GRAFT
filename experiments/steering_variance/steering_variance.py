@@ -463,6 +463,109 @@ def phase_rollouts(args):
 
 
 # --------------------------------------------------------------------------- #
+# steer: does alpha * v_L at generation time change hacking? (SFT base)        #
+# --------------------------------------------------------------------------- #
+def phase_steer(args):
+    """tools/modal_pps_extract.py::select for the cells baseline and
+    (hackonly, L, alpha) only, on the natural-rollout question set
+    (all-hackable eval split, neutral prompt, K per question). HF generate with
+    a forward hook adding alpha * v_L (cast to bf16, then scaled, as upstream)
+    to the output of model.model.layers[L] at every position, prompt included."""
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
+    from envs.countdown_code import _EVAL_START, _rows
+    from rewards import _CC_SLOTS, countdown_all_components
+
+    model_path = sft_path()
+    out_path = os.path.join(args.out, "steer", f"steer_L{args.layer}_a{args.alpha:g}.json")
+    if os.path.exists(out_path):
+        print(f"[steer] {out_path} exists, skipping")
+        return
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    d = torch.load(os.path.join(args.out, "pps", "pps_vector_hackonly.pt"), map_location="cpu")
+    v = d["raw"][args.layer]
+    rows = _rows("eval", args.n_q, _EVAL_START, 1.0)
+    assert all(r["hackable"] for r in rows)
+    tok = AutoTokenizer.from_pretrained(model_path)
+    if tok.pad_token is None:
+        tok.pad_token = tok.eos_token
+    tok.padding_side = "left"
+    prompt_ids = [tok(tok.apply_chat_template(r["prompt"], add_generation_prompt=True,
+                                              tokenize=False, enable_thinking=False),
+                      add_special_tokens=False)["input_ids"] for r in rows]
+    model = AutoModelForCausalLM.from_pretrained(
+        model_path, torch_dtype=torch.bfloat16,
+        attn_implementation="flash_attention_2").to("cuda").eval()
+    assert len(model.model.layers) == NUM_LAYERS
+    eos = model.generation_config.eos_token_id
+    eos = [eos] if isinstance(eos, int) else list(eos)
+    # Fresh config: the model dir's generation_config carries Qwen chat
+    # defaults (temp 0.6 / top_p 0.95 / top_k 20); top_k=0 disables top-k.
+    gen_cfg = GenerationConfig(max_new_tokens=MAX_TOKENS, do_sample=True,
+                               temperature=TEMPERATURE, top_p=1.0, top_k=0,
+                               eos_token_id=eos, pad_token_id=tok.pad_token_id)
+    stop = set(eos) | {tok.pad_token_id}
+    add = float(args.alpha) * v.to("cuda").to(torch.bfloat16)
+
+    def _steer(module, inp, output):
+        if isinstance(output, tuple):
+            return (output[0] + add,) + output[1:]
+        return output + add
+
+    cells = {}
+    for cell in ("baseline", f"hackonly|L{args.layer}|a{args.alpha:g}"):
+        handle = (model.model.layers[args.layer].register_forward_hook(_steer)
+                  if cell != "baseline" else None)
+        torch.manual_seed(args.seed)
+        t0 = time.time()
+        recs = []
+        try:
+            for i in range(0, len(rows), args.gen_batch):
+                batch = [{"input_ids": ids} for ids in prompt_ids[i:i + args.gen_batch]]
+                enc = tok.pad(batch, return_tensors="pt").to("cuda")
+                with torch.no_grad():
+                    gen = model.generate(**enc, generation_config=gen_cfg,
+                                         num_return_sequences=args.k)
+                new = gen[:, enc["input_ids"].shape[1]:].tolist()
+                for j in range(len(batch)):
+                    for si, r in enumerate(new[j * args.k:(j + 1) * args.k]):
+                        ids = _strip(r, stop)
+                        recs.append({"q_idx": i + j, "sample_idx": si,
+                                     "finish": "stop" if any(t in stop for t in r) else "length",
+                                     "completion": tok.decode(ids, skip_special_tokens=True),
+                                     "n_tok": len(ids)})
+                print(f"[steer {cell}] {min(i + args.gen_batch, len(rows))}/{len(rows)} "
+                      f"({time.time() - t0:.0f}s)", flush=True)
+        finally:
+            if handle is not None:
+                handle.remove()
+        comp = countdown_all_components([x["completion"] for x in recs],
+                                        nums=[rows[x["q_idx"]]["nums"] for x in recs],
+                                        target=[rows[x["q_idx"]]["target"] for x in recs],
+                                        hackable=[True] * len(recs))
+        for n, name in enumerate(_CC_SLOTS):
+            for x, val in zip(recs, comp[n]):
+                x[name] = float(val)
+        for x in recs:
+            x["test_modified"] = bool(segments(x["completion"])["test_modified"])
+        n = len(recs)
+        stats = {name: sum(x[name] for x in recs) / n for name in _CC_SLOTS}
+        stats["test_modified"] = sum(x["test_modified"] for x in recs) / n
+        stats["truncated"] = sum(x["finish"] == "length" for x in recs) / n
+        stats["mean_resp_tokens"] = sum(x["n_tok"] for x in recs) / n
+        stats["n"] = n
+        cells[cell] = {"stats": stats, "gen_seconds": round(time.time() - t0), "rollouts": recs}
+        print(f"[steer {cell}] {json.dumps(stats)}", flush=True)
+    meta = {"sft": model_path, "variant": "hackonly", "layer": args.layer, "alpha": args.alpha,
+            "v_norm": float(v.norm()), "shift_norm": float(args.alpha * v.norm()),
+            "n_q": len(rows), "k": args.k, "split": "eval", "start": _EVAL_START,
+            "hack_frac": 1.0, "temperature": TEMPERATURE, "top_p": 1.0, "top_k": None,
+            "max_tokens": MAX_TOKENS, "seed": args.seed}
+    _dump({"meta": meta, "cells": cells}, out_path)
+    print(f"[steer] wrote {out_path}")
+
+
+# --------------------------------------------------------------------------- #
 # capture: per-token activations of every rollout under one model              #
 # --------------------------------------------------------------------------- #
 def load_sources(out):
@@ -783,7 +886,7 @@ def phase_analyze(args):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("phase", choices=("pps", "rollouts", "capture", "prompts", "analyze"))
+    ap.add_argument("phase", choices=("pps", "rollouts", "steer", "capture", "prompts", "analyze"))
     ap.add_argument("--out", default="output/steering_variance")
     ap.add_argument("--source", choices=ACT_SOURCES)
     ap.add_argument("--model", choices=("base", "dn"))
@@ -794,11 +897,13 @@ def main():
     ap.add_argument("--n_extract", type=int, default=None, help="pps: override N_EXTRACT")
     ap.add_argument("--min_class", type=int, default=20, help="analyze: min rollouts per class per fold")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--layer", type=int, default=LAYER, help="steer: layer of v_L")
+    ap.add_argument("--alpha", type=float, default=PPS_ALPHA, help="steer: alpha")
     ap.add_argument("--smoke", action="store_true")
     args = ap.parse_args()
     if args.smoke:
         args.n_q, args.k, args.n_extract, args.min_class = 4, 4, 16, 1
-    {"pps": phase_pps, "rollouts": phase_rollouts, "capture": phase_capture,
+    {"pps": phase_pps, "rollouts": phase_rollouts, "steer": phase_steer, "capture": phase_capture,
      "prompts": phase_prompts, "analyze": phase_analyze}[args.phase](args)
 
 

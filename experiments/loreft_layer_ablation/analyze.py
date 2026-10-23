@@ -4,9 +4,16 @@ keep-only and drop-only configs side by side, written to
 
     python experiments/loreft_layer_ablation/analyze.py \
         experiments/loreft_layer_ablation/results/cdhf100_gr_loreft_r1_lr3_s9
+
+With --aggregate OUT and several run dirs (seeds), writes OUT/summary.md with
+the mean ± SEM across runs per config, plus each run's reference configs.
+
+    python experiments/loreft_layer_ablation/analyze.py --aggregate results/<group> \
+        results/<run_s1> results/<run_s9> ...
 """
 import glob
 import json
+import math
 import os
 import sys
 
@@ -27,15 +34,37 @@ def load(run_dir):
     return out
 
 
+KEYS = ("comb", "retain", "hack", "probe", "parse")
+
+
+def aggregate(rowsets):
+    """Per config and metric: mean over runs, and SEM across runs under '<key>_e'."""
+    names = set(rowsets[0])
+    assert all(set(r) == names for r in rowsets), "runs have different configs"
+    out = {}
+    for name in names:
+        row = {}
+        for k in KEYS:
+            xs = [r[name][k] for r in rowsets]
+            m = sum(xs) / len(xs)
+            row[k] = m
+            row[k + "_e"] = math.sqrt(sum((x - m) ** 2 for x in xs) / (len(xs) - 1) / len(xs))
+        out[name] = row
+    return out
+
+
 def fmt(row, ref=None):
     cells = []
-    for k in ("comb", "retain", "hack", "probe", "parse"):
+    for k in KEYS:
         if row is None:
             cells.append("")
-        elif ref is None:
-            cells.append(f"{row[k]:.3f}")
-        else:
-            cells.append(f"{row[k]:.3f} ({row[k] - ref[k]:+.3f})")
+            continue
+        c = f"{row[k]:.3f}"
+        if k + "_e" in row:
+            c += f" ± {row[k + '_e']:.3f}"
+        if ref is not None:
+            c += f" ({row[k] - ref[k]:+.3f})"
+        cells.append(c)
     return cells
 
 
@@ -54,7 +83,49 @@ def table(rows, part, windows, refs):
     return "\n".join(lines)
 
 
+def main_aggregate(dest, run_dirs):
+    rowsets = [load(d) for d in run_dirs]
+    rows = aggregate(rowsets)
+    windows = sorted({n.split("_", 2)[2] for n in rows if "_keep_" in n},
+                     key=lambda w: int(w.split("-")[0]))
+    runs = [os.path.basename(d) for d in run_dirs]
+    head = ["run", "config", "comb", "retain", "hack", "probe pass@1", "probe parse"]
+    per_run = ["| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
+    for run, r in zip(runs, rowsets):
+        for name in ("retain_none", "retain_all", "forget_all"):
+            per_run.append("| " + " | ".join([run, name] + fmt(r[name])) + " |")
+    md = [
+        f"# Layer-window ablations: mean of {len(runs)} runs",
+        "",
+        "Runs: " + ", ".join(f"`{r}`" for r in runs) + ". Per-run tables and plots are in",
+        "`../<run>/`. Each cell is the mean over runs ± the SEM across runs (n=256",
+        "per run); keep_W deltas are vs the all-off reference, drop_W vs the all-on",
+        "one, both on the means. Plots (mean ± SEM; effect shares are the mean of",
+        "the per-run shares) are in `plots/`.",
+        "",
+        "## References per run",
+        "",
+        "\n".join(per_run),
+        "",
+        "## Part A: retain adapter windows, forget off (scale 0)",
+        "",
+        table(rows, "retain", windows, ("retain_none", "retain_all")),
+        "",
+        "## Part B: forget adapter windows at scale 1, retain on everywhere",
+        "",
+        table(rows, "forget", windows, ("retain_all", "forget_all")),
+        "",
+    ]
+    text = "\n".join(md)
+    os.makedirs(dest, exist_ok=True)
+    with open(os.path.join(dest, "summary.md"), "w") as f:
+        f.write(text)
+    print(text)
+
+
 def main():
+    if sys.argv[1] == "--aggregate":
+        return main_aggregate(sys.argv[2].rstrip("/"), [d.rstrip("/") for d in sys.argv[3:]])
     run_dir = sys.argv[1].rstrip("/")
     rows = load(run_dir)
     windows = sorted({n.split("_", 2)[2] for n in rows if "_keep_" in n or "_drop_" in n},
